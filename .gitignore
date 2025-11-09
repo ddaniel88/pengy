@@ -1,0 +1,77 @@
+# === PYTHON / MICROPYTHON ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.mpy
+*.bak
+*.swp
+
+# Bytecode ili privremeni build fajlovi
+build/
+dist/
+.eggs/
+*.egg-info/
+*.manifest
+*.spec
+
+# === IDE / EDITOR ===
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# === OS SPECIFIČNO ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === ENV I KONFIGURACIJE ===
+.env
+.env.*
+config.json
+wifi_login.html      # ako generišeš novi fajl na uređaju
+wifi_credentials.txt # ili drugi lokalni fajl s lozinkama
+secrets.json
+credentials.json
+
+# === LOGS ===
+*.log
+logs/
+log/
+tmp/
+temp/
+
+# === FIRMWARE / BOARD ARTIFACTS ===
+*.bin
+*.hex
+*.elf
+*.uf2
+*.map
+*.obj
+*.o
+
+# === UPLOAD I DEPLOY ===
+*.zip
+*.tar
+*.gz
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+upload/
+deploy/
+flash/
+
+# === TESTS ===
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# === MISC ===
+notes/
+scratch/
+old/
+*.local
+*.orig
