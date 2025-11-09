@@ -3,6 +3,9 @@ import machine
 import ubinascii
 from umqtt.simple import MQTTClient
 
+import offline_buffer  # naš novi modul
+
+
 def connect_mqtt(config):
     mqtt_config = config.get("mqtt", {})
     host = mqtt_config.get("host", "test.mosquitto.org")
@@ -14,37 +17,66 @@ def connect_mqtt(config):
         client_id=client_id,
         server=host,
         port=port,
-        user=mqtt_config.get("user", None),
-        password=mqtt_config.get("password", None),
-        keepalive=60,
     )
-
     try:
         client.connect()
-        print("MQTT connected to", host, port)
+        print("MQTT connected")
         return client
     except Exception as exc:
         print("MQTT connect failed:", exc)
         return None
 
 
-def publish_safe(client, config, topic: bytes, message: str, retain: bool = False, qos: int = 0):
-    if not client:
-        return client
+def _is_network_error(exc):
+    # na ESP/MicroPython-u mrežne greške uglavnom budu OSError
+    # možemo ovo kasnije proširiti po kodovima
+    return isinstance(exc, OSError)
 
-    try:
-        client.publish(topic, message, retain=retain, qos=qos)
-        return client
-    except Exception as exc:
-        print("MQTT publish error:", exc)
-        # reconnect
-        new_client = connect_mqtt(config)
-        if new_client:
+
+def publish(
+    client,
+    config,
+    topic,
+    message,
+    retain=False,
+    qos=0,
+    message_type="minute",
+    from_flush=False,
+):
+    """
+    Vrati (client, ok, was_network_error)
+    - ok = True ako je konačno poslato
+    - was_network_error = True ako je razlog pada mreža (bitno za main da zna šta da radi s RAM porukama)
+    """
+    last_network_error = False
+
+    for _ in range(3):  # 3 pokušaja
+        if not client:
+            client = connect_mqtt(config)
+
+        if not client:
+            # nema ni konekcije – sigurno je mreža
+            last_network_error = True
+        else:
             try:
-                new_client.publish(topic, message, retain=retain, qos=qos)
-            except Exception as exc2:
-                print("MQTT retry failed:", exc2)
-        return new_client
+                client.publish(topic, message, retain=retain, qos=qos)
+                return client, True, False
+            except Exception as exc:
+                print("MQTT publish failed:", exc)
+                if _is_network_error(exc):
+                    last_network_error = True
+                    # pokušaćemo opet
+                    client = None  # forsiraj reconnect
+                else:
+                    # nije mreža – nema buffera, nema dalje
+                    return client, False, False
+
+    # ako smo došli ovde – nije uspelo ni posle 3 pokušaja
+    # ako je mreža i poruka NIJE minutna i nije iz flush-a – upiši u fajl
+    if (not from_flush) and last_network_error and message_type != "minute":
+        offline_buffer.add_message(message_type, message)
+
+    return client, False, last_network_error
 
 
 def setup_downlink(client, topic: str, callback):

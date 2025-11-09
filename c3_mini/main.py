@@ -10,10 +10,17 @@ from sensor_sen55 import Sen55Sensor
 from sensor_manager import SensorManager
 import mqtt_client
 import wifi_setup
+import offline_buffer
 from uploader.external_manager import ExternalManager
 from maintenance_handler import MaintenanceHandler
 
 CONFIG_FILE = "config.json"
+
+UNIX_EPOCH_OFFSET = 946684800  # sekundi od 1970 do 2000
+
+# RAM buffer za minutne
+MINUTE_RAM_LIMIT = 30
+minute_ram_buffer = []
 
 # globali za status
 last_minute_measurement = None
@@ -89,6 +96,9 @@ def handle_status_request(sock):
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
             client.send(body)
         elif "GET /info" in req_txt:
+            now = time.time()
+            unix_ts = now + UNIX_EPOCH_OFFSET
+            
             info = {
                 "fw": device_meta.get("version"),
                 "device": device_meta.get("uid"),
@@ -98,7 +108,7 @@ def handle_status_request(sock):
                     "altitude": device_meta.get("altitude"),
                 },
                 "streams": device_meta.get("streams", []),
-                "ts": time.time()
+                "ts": unix_ts
             }
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
             client.send(ujson.dumps(info))
@@ -133,14 +143,49 @@ def calculate_aggregated(measurements):
                 vals.append(v)
         agg[k] = sum(vals) / len(vals) if vals else None
 
+    now = time.time()
+    unix_ts = now + UNIX_EPOCH_OFFSET
+    
     agg["minutes"] = len(measurements)
-    agg["ts"] = time.time()
+    agg["ts"] = unix_ts
     return agg
 
 def on_mqtt_cmd(topic, msg):
     # za sada samo ispiši
     print("MQTT CMD:", topic, msg)
     # ovde ćemo kasnije: reboot, force upload, pull update...
+
+def add_minute_to_ram(topic: str, payload: str):
+    global minute_ram_buffer
+    minute_ram_buffer.append((topic, payload))
+    if len(minute_ram_buffer) > MINUTE_RAM_LIMIT:
+        # FIFO – izbaci najstariju
+        minute_ram_buffer.pop(0)
+
+def flush_minute_ram(mqtt_client_instance, config):
+    global minute_ram_buffer
+    if not minute_ram_buffer:
+        return mqtt_client_instance
+
+    still_pending = []
+    for topic, payload in minute_ram_buffer:
+        mqtt_client_instance, ok, net_err = mqtt_client.publish(
+            mqtt_client_instance,
+            config,
+            topic.encode(),
+            payload,
+            False,
+            0,
+            "minute",
+            from_flush=True,
+        )
+        if not ok and net_err:
+            # mrežni problem – ostavi za kasnije
+            still_pending.append((topic, payload))
+        # ako nije mrežni, bacamo – minute nas ne zanimaju trajno
+
+    minute_ram_buffer = still_pending
+    return mqtt_client_instance
 
 def main():
     global last_minute_measurement, previous_minute_measurement, minute_measurements_buffer
@@ -165,13 +210,21 @@ def main():
     device_meta = config.get("device", {})
     base_topic = config.get("mqtt", {}).get("base_topic", "pengy/rs/nis")
     uid = device_meta.get("uid", "unknown")
-
+    
     # senzori
     sen55 = Sen55Sensor()
     sensor_manager = SensorManager([sen55])
 
     # MQTT
     mqtt_client_instance = mqtt_client.connect_mqtt(config)
+    
+    # odmah probaj da isprazniš offline fajl (ako je bilo restarta bez neta)
+    mqtt_client_instance, _ = offline_buffer.flush_buffer(
+        mqtt_client_instance,
+        config,
+        mqtt_client.publish,
+    )
+    # minute iz RAM-a nemamo posle restarta, to je ok
 
     # maintenance
     maintenance = None
@@ -201,10 +254,13 @@ def main():
     external_mgr = ExternalManager(config, device_meta)
 
     minute_counter = 0
-    last_minute_ts = time.time()
+    now = time.time()
+    unix_ts = now + UNIX_EPOCH_OFFSET
+    last_minute_ts = unix_ts
+    last_flush_ts = unix_ts
 
     while True:
-        now = time.time()
+        now = time.time() + UNIX_EPOCH_OFFSET
 
         # HTTP
         handle_status_request(status_server)
@@ -248,13 +304,17 @@ def main():
             # publish na MQTT
             if mqtt_client_instance:
                 minute_topic = "{}/{}/minute".format(base_topic, uid)
-                mqtt_client_instance = mqtt_client.publish_safe(
+                mqtt_client_instance, ok, net_err = mqtt_client.publish(
                     mqtt_client_instance,
                     config,
                     minute_topic.encode(),
                     ujson.dumps(payload),
-                    retain=False
+                    retain=False,
+                    message_type="minute",
                 )
+                if not ok and net_err:
+                    # čuvamo samo ako je mreža, i samo u RAM
+                    add_minute_to_ram(minute_topic, ujson.dumps(payload))
 
             # external send (sensor.community...)
             if measurement:
@@ -269,17 +329,32 @@ def main():
                     if mqtt_client_instance and last_aggregated_measurement:
                         agg_topic = "{}/{}/agg".format(base_topic, uid)
                         
-                        mqtt_client_instance = mqtt_client.publish_safe(
+                        mqtt_client_instance, ok, net_err = mqtt_client.publish(
                             mqtt_client_instance,
                             config,
                             agg_topic.encode(),
                             ujson.dumps(last_aggregated_measurement),
-                            retain=False
+                            retain=False,
+                            message_type="aggregate",
                         )
+                        # ovde NIŠTA ne radimo – mqtt_client će sam upisati u fajl
+                        # ako je mreža pala
                     minute_measurements_buffer = []
 
             last_minute_ts = now
             minute_counter += 1
+
+        now = time.time() + UNIX_EPOCH_OFFSET
+
+        # npr. na svakih 30 sekundi
+        if now - last_flush_ts >= 30:
+            mqtt_client_instance, _ = offline_buffer.flush_buffer(
+                mqtt_client_instance,
+                config,
+                mqtt_client.publish,
+            )
+            mqtt_client_instance = flush_minute_ram(mqtt_client_instance, config)
+            last_flush_ts = now
 
         time.sleep_ms(150)
 
