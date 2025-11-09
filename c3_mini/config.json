@@ -1,0 +1,34 @@
+{
+    "wifi": {
+        "ssid": "Dimitrov",
+        "password": "pass"
+    },
+    "mqtt": {
+        "host": "test.mosquitto.org",
+        "port": 1883,
+        "base_topic": "pengy/rs/nis",
+        "retain": true
+    },
+    "device": {
+        "uid": "69bafab7",
+        "name": "Peskare",
+        "description": "",
+        "lat": 43.319,
+        "lon": 21.896,
+        "altitude": 210,
+        "status": "active",
+        "version": "1.0.0",
+        "streams": ["pm2_5", "pm10", "temperature", "humidity"]
+    },
+    "sampling": {
+        "samples_per_min": 5,
+        "trim": true,
+        "agg_window": 10
+    },    
+    "external": {
+        "sensor_community": {
+            "enabled": false,
+            "interval_minutes": 10
+        }
+    }
+}
