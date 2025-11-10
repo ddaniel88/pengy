@@ -7,6 +7,7 @@ import machine
 import ntptime
 import led_status
 import os
+import aqi_utils
 
 from sensor_sen55 import Sen55Sensor
 from sensor_manager import SensorManager
@@ -226,14 +227,14 @@ def main():
     config = load_config()
     if not config:
         print("No config, entering setup mode...")
-        wifi_setup.run_setup_mode()
+        setup.run_setup_mode()
         return
 
     wifi_ok = connect_wifi(config["wifi"]["ssid"], config["wifi"]["password"])
     if not wifi_ok:
         print("Cannot connect to WiFi, entering setup mode...")
         led_status.set_wifi_fail()
-        wifi_setup.run_setup_mode()
+        setup.run_setup_mode()
         return
 
     print("WiFi connected.")
@@ -292,8 +293,17 @@ def main():
     unix_ts = now + UNIX_EPOCH_OFFSET
     last_minute_ts = unix_ts
     last_flush_ts = unix_ts
+    last_wifi_blink = time.ticks_ms()
 
     while True:
+        sta = network.WLAN(network.STA_IF)
+        if not sta.isconnected():
+            # blink na ~2s
+            if (time.ticks_ms() - last_wifi_blink) > 1000:
+                led_status.set_wifi_fail()
+                last_wifi_blink = time.ticks_ms()
+        # ako je povezan, ne diramo LED – ostaje AQI
+                
         now = time.time() + UNIX_EPOCH_OFFSET
 
         # HTTP
@@ -314,7 +324,20 @@ def main():
                 interval_seconds=1,
                 trim_extremes=trim_extremes
             )
-            led_status.set_ok()
+            
+            pm25 = (
+                measurement.get("pm25")
+                or measurement.get("pm2_5")
+                or measurement.get("pm_2_5")
+            )
+            pm10 = (
+                measurement.get("pm10")
+                or measurement.get("pm10_0")
+                or measurement.get("pm_10")
+            )
+
+            aqi_level = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
+            led_status.set_aqi_level(aqi_level)
 
             previous_minute_measurement = last_minute_measurement
             
