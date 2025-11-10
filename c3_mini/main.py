@@ -5,6 +5,7 @@ import time
 import ujson
 import machine
 import ntptime
+import led_status
 
 from sensor_sen55 import Sen55Sensor
 from sensor_manager import SensorManager
@@ -13,6 +14,12 @@ import wifi_setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
 from maintenance_handler import MaintenanceHandler
+try:
+    from uploader.sensor_community import get_last_sc
+except ImportError:
+    get_last_sc = None
+
+led_status.set_boot()
 
 CONFIG_FILE = "config.json"
 
@@ -82,13 +89,18 @@ def handle_status_request(sock):
             req_txt = req.decode("utf-8", "ignore")
 
         if "GET /status" in req_txt:
-            body = ujson.dumps({
+            status_obj = {
                 "last_minute": last_minute_measurement,
                 "prev_minute": previous_minute_measurement,
                 "last_agg": last_aggregated_measurement,
                 "supported_fields": sensor_manager.get_supported_fields() if sensor_manager else [],
                 "device": device_meta
-            })
+            }
+            
+            if get_last_sc:
+                status_obj["last_sc"] = get_last_sc()
+            
+            body = ujson.dumps(status_obj)
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
             client.send(body)
         elif "GET /config" in req_txt:
@@ -200,10 +212,12 @@ def main():
     wifi_ok = connect_wifi(config["wifi"]["ssid"], config["wifi"]["password"])
     if not wifi_ok:
         print("Cannot connect to WiFi, entering setup mode...")
+        led_status.set_wifi_fail()
         wifi_setup.run_setup_mode()
         return
 
     print("WiFi connected.")
+    led_status.set_ok()
     sync_time_utc()
 
     # device meta i config
@@ -274,11 +288,13 @@ def main():
 
         if now - last_minute_ts >= 60:
             print("⏱ minute", minute_counter)
+            led_status.set_measuring()
             measurement = sensor_manager.measure_minute_all(
                 samples_count=samples_per_minute,
                 interval_seconds=1,
                 trim_extremes=trim_extremes
             )
+            led_status.set_ok()
 
             previous_minute_measurement = last_minute_measurement
             

@@ -1,7 +1,7 @@
 {
     "wifi": {
         "ssid": "Dimitrov",
-        "password": "pass"
+        "password": "qdimitrov123"
     },
     "mqtt": {
         "host": "test.mosquitto.org",
@@ -10,11 +10,11 @@
         "retain": true
     },
     "device": {
-        "uid": "69bafab7",
+        "uid": "pengy-wifi-0004e3ec",
         "name": "Peskare",
         "description": "",
-        "lat": 43.319,
-        "lon": 21.896,
+        "lat": 43.32451475,
+        "lon": 21.91667465,
         "altitude": 210,
         "status": "active",
         "version": "1.0.0",
@@ -27,8 +27,11 @@
     },    
     "external": {
         "sensor_community": {
-            "enabled": false,
-            "interval_minutes": 10
+            "enabled": true,
+            "base_url": "https://api.sensor.community/v1/push-sensor-data/",
+            "sensor_id": "esp32-0004e3ec",
+            "interval_seconds": 145,
+            "software_version": "pengy-wifi-1.0"
         }
     }
 }
