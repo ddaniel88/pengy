@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="utf-8" />
+  <title>PENGY admin</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root {
+      --bg: #f2f4f8;
+      --card: #fff;
+      --accent: #0066cc;
+      --border: #d0d7de;
+      --text: #222;
+    }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .card {
+      background: var(--card);
+      max-width: 560px;
+      width: 100%;
+      padding: 1rem 1.2rem 1.2rem;
+      border-radius: .7rem;
+      box-shadow: 0 10px 25px rgba(0,0,0,.08);
+    }
+    h1 {
+      font-size: 1rem;
+      margin: 0 0 .5rem 0;
+    }
+    .section {
+      margin-top: .7rem;
+      margin-bottom: .35rem;
+      font-weight: 600;
+      font-size: .7rem;
+      color: #333;
+    }
+    label {
+      display: block;
+      font-size: .65rem;
+      margin-bottom: .15rem;
+    }
+    input[type="text"],
+    input[type="password"],
+    input[type="number"] {
+      width: 100%;
+      padding: .4rem .45rem;
+      margin-bottom: .4rem;
+      border: 1px solid var(--border);
+      border-radius: .35rem;
+      font-size: .7rem;
+      box-sizing: border-box;
+    }
+    .row {
+      display: flex;
+      gap: .5rem;
+    }
+    .row > .col {
+      flex: 1;
+    }
+    .inline-checkbox {
+      display: flex;
+      align-items: center;
+      gap: .35rem;
+      margin-bottom: .4rem;
+      font-size: .65rem;
+    }
+    button {
+      width: 100%;
+      padding: .55rem;
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      border-radius: .35rem;
+      font-size: .78rem;
+      margin-top: .5rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>PENGY – admin</h1>
+    <form method="POST" action="/admin">
+      <!-- WiFi -->
+      <div class="section">WiFi</div>
+      <label for="wifi_ssid">SSID</label>
+      <input id="wifi_ssid" name="wifi_ssid" type="text" />
+      <label for="wifi_pass">Lozinka</label>
+      <input id="wifi_pass" name="wifi_pass" type="password" />
+
+      <!-- MQTT -->
+      <div class="section">MQTT</div>
+      <label for="mqtt_host">Host</label>
+      <input id="mqtt_host" name="mqtt_host" type="text" value="test.mosquitto.org" />
+      <div class="row">
+        <div class="col">
+          <label for="mqtt_port">Port</label>
+          <input id="mqtt_port" name="mqtt_port" type="number" value="1883" />
+        </div>
+        <div class="col">
+          <label for="mqtt_base_topic">Base topic</label>
+          <input id="mqtt_base_topic" name="mqtt_base_topic" type="text" value="pengy/rs/nis" />
+        </div>
+      </div>
+      <label class="inline-checkbox">
+        <input type="checkbox" name="mqtt_retain" checked />
+        Retain poruke
+      </label>
+
+      <!-- Device -->
+      <div class="section">Uređaj</div>
+      <label for="device_name">Naziv</label>
+      <input id="device_name" name="device_name" type="text" />
+      <label for="description">Opis</label>
+      <input id="description" name="description" type="text" />
+      <div class="row">
+        <div class="col">
+          <label for="lat">Latitude</label>
+          <input id="lat" name="lat" type="text" />
+        </div>
+        <div class="col">
+          <label for="lon">Longitude</label>
+          <input id="lon" name="lon" type="text" />
+        </div>
+        <div class="col">
+          <label for="alt">Altitude (m)</label>
+          <input id="alt" name="alt" type="text" />
+        </div>
+      </div>
+
+      <!-- Sampling -->
+      <div class="section">Sampling</div>
+      <div class="row">
+        <div class="col">
+          <label for="samples_per_min">Samples/min</label>
+          <input id="samples_per_min" name="samples_per_min" type="number" value="5" />
+        </div>
+        <div class="col">
+          <label for="agg_window">Agg window</label>
+          <input id="agg_window" name="agg_window" type="number" value="10" />
+        </div>
+      </div>
+      <label class="inline-checkbox">
+        <input type="checkbox" name="trim" checked />
+        Trim ekstremne vrednosti
+      </label>
+
+      <!-- sensor.community -->
+      <div class="section">sensor.community</div>
+      <label class="inline-checkbox">
+        <input type="checkbox" name="sc_enabled" />
+        Šalji podatke
+      </label>
+      <label for="sc_sensor_id">Sensor ID</label>
+      <input id="sc_sensor_id" name="sc_sensor_id" type="text" />
+      <label for="sc_interval">Interval (sek)</label>
+      <input id="sc_interval" name="sc_interval" type="number" value="145" />
+
+      <!-- Pengy API -->
+      <div class="section">Pengy API</div>
+      <label class="inline-checkbox">
+        <input type="checkbox" name="pengy_enabled" />
+        Uključi
+      </label>
+      <label for="pengy_base_url">Base URL</label>
+      <input id="pengy_base_url" name="pengy_base_url" type="text" />
+      <label for="pengy_api_key">API key</label>
+      <input id="pengy_api_key" name="pengy_api_key" type="text" />
+
+      <button type="submit">Sačuvaj i restartuj</button>
+    </form>
+  </div>
+</body>
+</html>

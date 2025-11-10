@@ -6,11 +6,12 @@ import ujson
 import machine
 import ntptime
 import led_status
+import os
 
 from sensor_sen55 import Sen55Sensor
 from sensor_manager import SensorManager
 import mqtt_client
-import wifi_setup
+import setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
 from maintenance_handler import MaintenanceHandler
@@ -200,6 +201,25 @@ def flush_minute_ram(mqtt_client_instance, config):
     return mqtt_client_instance
 
 def main():
+    # 1. ako je postavljen flag - idi u setup mod
+    go_setup = False
+    try:
+        os.stat("enter_setup.flag")
+        go_setup = True
+        # obriši flag da ne ulazi stalno
+        try:
+            os.remove("enter_setup.flag")
+        except OSError:
+            pass
+    except OSError:
+        # nema flag-a
+        pass
+
+    if go_setup:
+        # ovo blokira do timeout-a ili do uspešnog POST-a
+        # ako istekne timeout, setup.run_setup_mode() će da vrati kontrolu
+        setup.run_setup_mode(timeout_seconds=180)
+    
     global last_minute_measurement, previous_minute_measurement, minute_measurements_buffer
     global last_aggregated_measurement, sensor_manager, mqtt_client_instance, config, device_meta
 
@@ -330,7 +350,10 @@ def main():
                 )
                 if not ok and net_err:
                     # čuvamo samo ako je mreža, i samo u RAM
+                    print("Not sent to MQTT, Network error.", payload)
                     add_minute_to_ram(minute_topic, ujson.dumps(payload))
+                else:
+                    print("Sent to MQTT", payload)
 
             # external send (sensor.community...)
             if measurement:

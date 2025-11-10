@@ -2,9 +2,10 @@
 import os
 
 UPDATE_MAP = {
-    "update_main.py": "main.py",
+    #"update_main.py": "main.py",
     "update_sensor_community.py": "uploader/sensor_community.py",
-    "update_pulse_eco.py": "uploader/pulse_eco.py",
+    "update_pengy_api.py": "uploader/pengy_api.py",
+    "update_setup.py": "setup.py",
 }
 
 def file_exists(path):

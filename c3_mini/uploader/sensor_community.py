@@ -99,11 +99,12 @@ class SensorCommunityUploader(BaseUploader):
         
         led_status.set_ok()
         
-    def get_last_sc():
+    @classmethod
+    def get_last_sc(cls):
         return {
-            "x_pin": last_sc_xpin,
-            "payload": last_sc_payload,
-            "response": last_sc_response,
+            "x_pin": cls.last_sc_xpin,
+            "payload": cls.last_sc_payload,
+            "response": cls.last_sc_response,
         }    
 
     # ------------------------------------------------------------------
@@ -245,13 +246,16 @@ class SensorCommunityUploader(BaseUploader):
         Zajednička metoda za slanje ka sensor.community.
         Koristimo urequests ako postoji.
         """
+        
+        cls = self.__class__  # da možemo da upišemo u class-level promenljive
+        
         if not requests:
             # ako nemamo urequests na firmwaru, samo štampaj da vidimo payload
             print("SC payload (no requests):", x_pin, payload)
             
-            sc_mod.last_sc_payload = payload
-            sc_mod.last_sc_xpin = x_pin
-            sc_mod.last_sc_response = {"error": "urequests not available"}
+            cls.last_sc_payload = payload
+            cls.last_sc_xpin = x_pin
+            cls.last_sc_response = {"error": "urequests not available"}
             
             return
 
@@ -272,7 +276,9 @@ class SensorCommunityUploader(BaseUploader):
         )
         # ako hoćeš, ovde možeš da proveriš status
         print("SC RESP:", resp.status_code, resp.text)
-        sc_mod.last_sc_response = {
+        cls.last_sc_payload = payload
+        cls.last_sc_xpin = x_pin
+        cls.last_sc_response = {
             "status": resp.status_code,
             "text": resp.text,
         }
@@ -281,5 +287,5 @@ class SensorCommunityUploader(BaseUploader):
             resp.close()
         except Exception:
             print("SC post error:", exc)
-            sc_mod.last_sc_response = {"error": str(exc)}
+            cls.last_sc_response = {"error": str(exc)}
             pass

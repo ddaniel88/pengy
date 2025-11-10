@@ -51,13 +51,17 @@ class MaintenanceHandler:
                 sta.active(False)
                 machine.reset()
 
-            elif op == "factory_reset":
-                print("⚠️ Factory reset initiated")
-                for f in ["config.json", "update_main.py"]:
-                    try:
-                        os.remove(f)
-                    except:
-                        pass
+            elif op == "enter_setup":
+                # napravi flag da main zna da ide u setup mod
+                try:
+                    with open("enter_setup.flag", "w") as f:
+                        f.write("1")
+                    print("enter_setup.flag created")
+                except Exception as exc:
+                    print("cannot create enter_setup.flag:", exc)
+
+                # mali delay pa reset
+                time.sleep(0.5)
                 machine.reset()
 
             else:

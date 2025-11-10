@@ -10,10 +10,16 @@ class ExternalManager:
 
         external_cfg = config.get("external", {})
 
-        # dodaj senzorsku zajednicu ako je uključena
+        # sensor.community
         sc_cfg = external_cfg.get("sensor_community", {})
         if sc_cfg.get("enabled", False):
             self.uploaders.append(SensorCommunityUploader(config, device))
+            
+        # pengy api
+        pengy_cfg = external_cfg.get("pengy_api", {})
+        if pengy_cfg.get("enabled", False):
+            from uploader.pengy_api import PengyApiUploader
+            self.uploaders.append(PengyApiUploader(config, device))
 
     def send_all(self, measurement: dict):
         now_ts = int(time.time())

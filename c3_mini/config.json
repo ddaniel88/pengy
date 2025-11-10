@@ -18,7 +18,7 @@
         "altitude": 210,
         "status": "active",
         "version": "1.0.0",
-        "streams": ["pm2_5", "pm10", "temperature", "humidity"]
+        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity"]
     },
     "sampling": {
         "samples_per_min": 5,
@@ -32,6 +32,14 @@
             "sensor_id": "esp32-0004e3ec",
             "interval_seconds": 145,
             "software_version": "pengy-wifi-1.0"
+        },
+        "pengy_api": {
+            "enabled": false,
+            "base_url": "",
+            "api_key": ""
         }
+    },
+    "security": {
+        "admin_pin": "1234"
     }
 }
