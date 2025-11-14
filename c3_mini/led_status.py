@@ -15,6 +15,7 @@ COLOR_WIFI_FAIL = (X_BRIGHT, 0, 0)        # crveno kad nije online
 
 # merenje = belo (kratko)
 COLOR_MEASURING = (BRIGHT, BRIGHT, BRIGHT)
+COLOR_UPLOADING = (0, 0, 180)
 
 # AQI boje (sens.comm stil / 6 nivoa)
 # 0 good, 1 fair, 2 moderate, 3 poor, 4 very poor, 5 extremely poor
@@ -36,6 +37,12 @@ def _show(color):
     np[0] = color
     np.write()
 
+def is_off():
+    try:
+        return np[0] == (0, 0, 0)
+    except Exception:
+        return True
+
 def set_boot():
     global _stable_color
     _stable_color = COLOR_BOOT
@@ -53,6 +60,10 @@ def set_wifi_fail():
 def set_measuring():
     # kratko belo – posle ovoga u kodu pozoveš restore() ili set_aqi_level
     _show(COLOR_MEASURING)
+
+def set_uploading():
+    # kratko plavo svetlo dok SC šalje
+    _show(COLOR_UPLOADING)
 
 def set_aqi_level(level: int):
     """

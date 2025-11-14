@@ -1,6 +1,7 @@
 # mqtt_client.py
 import machine
 import ubinascii
+import gc
 from umqtt.simple import MQTTClient
 
 import offline_buffer  # naš novi modul
@@ -24,6 +25,7 @@ def connect_mqtt(config):
         return client
     except Exception as exc:
         print("MQTT connect failed:", exc)
+        gc.collect()
         return None
 
 
@@ -59,6 +61,7 @@ def publish(
             last_network_error = True
         else:
             try:
+                gc.collect()
                 client.publish(topic, message, retain=retain, qos=qos)
                 return client, True, False
             except Exception as exc:
@@ -70,6 +73,8 @@ def publish(
                 else:
                     # nije mreža – nema buffera, nema dalje
                     return client, False, False
+            finally:
+                gc.collect()
 
     # ako smo došli ovde – nije uspelo ni posle 3 pokušaja
     # ako je mreža i poruka NIJE minutna i nije iz flush-a – upiši u fajl

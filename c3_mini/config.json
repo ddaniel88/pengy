@@ -10,15 +10,15 @@
         "retain": true
     },
     "device": {
-        "uid": "pengy-wifi-0004e3ec",
-        "name": "Peskare",
+        "uid": "pengy-wifi-0e0408e8",
+        "name": "Green Oasis",
         "description": "",
         "lat": 43.32451475,
         "lon": 21.91667465,
         "altitude": 210,
         "status": "active",
         "version": "1.0.0",
-        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity"]
+        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"]
     },
     "sampling": {
         "samples_per_min": 5,
@@ -29,7 +29,7 @@
         "sensor_community": {
             "enabled": true,
             "base_url": "https://api.sensor.community/v1/push-sensor-data/",
-            "sensor_id": "esp32-0004e3ec",
+            "sensor_id": "esp32-0e0408e8",
             "interval_seconds": 145,
             "software_version": "pengy-wifi-1.0"
         },
