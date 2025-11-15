@@ -59,11 +59,25 @@ def sync_time_utc():
 def connect_wifi(ssid: str, password: str, timeout_seconds: int = 15) -> bool:
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
+
+    # pokušaj da očistiš prethodno stanje
+    try:
+        sta.disconnect()
+    except Exception:
+        pass
+
     if not sta.isconnected():
-        sta.connect(ssid, password)
+        try:
+            sta.connect(ssid, password)
+        except OSError as exc:
+            # ovo je baš onaj "Wifi Internal Error"
+            print("WiFi connect OSError:", exc)
+            return False
+
         start = time.time()
         while not sta.isconnected() and (time.time() - start) < timeout_seconds:
             time.sleep(1)
+
     return sta.isconnected()
 
 def start_status_server():
@@ -230,11 +244,13 @@ def main():
         return
 
     wifi_ok = connect_wifi(config["wifi"]["ssid"], config["wifi"]["password"])
+    """
     if not wifi_ok:
         print("Cannot connect to WiFi, entering setup mode...")
-        led_status.set_wifi_fail()
+        led_status.set_wifi_fail_mode(True)
         setup.run_setup_mode()
         return
+    """
 
     print("WiFi connected.")
     led_status.set_off()
@@ -293,16 +309,17 @@ def main():
     unix_ts = now + UNIX_EPOCH_OFFSET
     last_minute_ts = unix_ts
     last_flush_ts = unix_ts
-    last_wifi_blink = time.ticks_ms()
+    #last_wifi_blink = time.ticks_ms()
 
     sta = network.WLAN(network.STA_IF)
     while True:
-        if not sta.isconnected():
-            # blink na ~2s
-            if (time.ticks_ms() - last_wifi_blink) > 1000:
-                led_status.set_wifi_fail()
-                last_wifi_blink = time.ticks_ms()
-        # ako je povezan, ne diramo LED – ostaje AQI
+        wifi_connected = sta.isconnected()
+        
+        # javi LED-u da li treba Wi-Fi blink mod
+        led_status.set_wifi_fail_mode(not wifi_connected)
+
+        # prepusti led_status-u da sam odradi treptanje
+        led_status.tick()
                 
         now = time.time() + UNIX_EPOCH_OFFSET
 
