@@ -8,10 +8,11 @@ import ntptime
 import led_status
 import os
 import aqi_utils
+import gc
 
-from sensor_sen55 import Sen55Sensor
-from sensor_manager import SensorManager
-import mqtt_client
+from sensors.sen55 import Sen55Sensor
+from sensors.manager import SensorManager
+from net import mqtt_client
 import setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
@@ -32,8 +33,6 @@ MINUTE_RAM_LIMIT = 30
 minute_ram_buffer = []
 
 # globali za status
-last_minute_measurement = None
-previous_minute_measurement = None
 last_aggregated_measurement = None
 minute_measurements_buffer = []
 device_meta = {}
@@ -59,11 +58,25 @@ def sync_time_utc():
 def connect_wifi(ssid: str, password: str, timeout_seconds: int = 15) -> bool:
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
+
+    # pokušaj da očistiš prethodno stanje
+    try:
+        sta.disconnect()
+    except Exception:
+        pass
+
     if not sta.isconnected():
-        sta.connect(ssid, password)
+        try:
+            sta.connect(ssid, password)
+        except OSError as exc:
+            # ovo je baš onaj "Wifi Internal Error"
+            print("WiFi connect OSError:", exc)
+            return False
+
         start = time.time()
         while not sta.isconnected() and (time.time() - start) < timeout_seconds:
             time.sleep(1)
+
     return sta.isconnected()
 
 def start_status_server():
@@ -77,7 +90,7 @@ def start_status_server():
     return s
 
 def handle_status_request(sock):
-    global last_minute_measurement, previous_minute_measurement, last_aggregated_measurement, sensor_manager, device_meta
+    global last_aggregated_measurement, sensor_manager, device_meta
     try:
         client, addr = sock.accept()
     except OSError:
@@ -90,11 +103,9 @@ def handle_status_request(sock):
         except:
             req_txt = req.decode("utf-8", "ignore")
 
+        gc.collect()
         if "GET /status" in req_txt:
             status_obj = {
-                "last_minute": last_minute_measurement,
-                "prev_minute": previous_minute_measurement,
-                "last_agg": last_aggregated_measurement,
                 "supported_fields": sensor_manager.get_supported_fields() if sensor_manager else [],
                 "device": device_meta
             }
@@ -132,6 +143,7 @@ def handle_status_request(sock):
         print("status handler error:", exc)
     finally:
         client.close()
+        gc.collect()
 
 def calculate_aggregated(measurements):
     if not measurements:
@@ -194,9 +206,7 @@ def flush_minute_ram(mqtt_client_instance, config):
             from_flush=True,
         )
         if not ok and net_err:
-            # mrežni problem – ostavi za kasnije
             still_pending.append((topic, payload))
-        # ako nije mrežni, bacamo – minute nas ne zanimaju trajno
 
     minute_ram_buffer = still_pending
     return mqtt_client_instance
@@ -221,7 +231,7 @@ def main():
         # ako istekne timeout, setup.run_setup_mode() će da vrati kontrolu
         setup.run_setup_mode(timeout_seconds=180)
     
-    global last_minute_measurement, previous_minute_measurement, minute_measurements_buffer
+    global minute_measurements_buffer
     global last_aggregated_measurement, sensor_manager, mqtt_client_instance, config, device_meta
 
     config = load_config()
@@ -231,14 +241,16 @@ def main():
         return
 
     wifi_ok = connect_wifi(config["wifi"]["ssid"], config["wifi"]["password"])
+    """
     if not wifi_ok:
         print("Cannot connect to WiFi, entering setup mode...")
-        led_status.set_wifi_fail()
+        led_status.set_wifi_fail_mode(True)
         setup.run_setup_mode()
         return
+    """
 
     print("WiFi connected.")
-    led_status.set_ok()
+    led_status.set_off()
     sync_time_utc()
 
     # device meta i config
@@ -293,16 +305,17 @@ def main():
     unix_ts = now + UNIX_EPOCH_OFFSET
     last_minute_ts = unix_ts
     last_flush_ts = unix_ts
-    last_wifi_blink = time.ticks_ms()
+    #last_wifi_blink = time.ticks_ms()
 
+    sta = network.WLAN(network.STA_IF)
     while True:
-        sta = network.WLAN(network.STA_IF)
-        if not sta.isconnected():
-            # blink na ~2s
-            if (time.ticks_ms() - last_wifi_blink) > 1000:
-                led_status.set_wifi_fail()
-                last_wifi_blink = time.ticks_ms()
-        # ako je povezan, ne diramo LED – ostaje AQI
+        wifi_connected = sta.isconnected()
+        
+        # javi LED-u da li treba Wi-Fi blink mod
+        led_status.set_wifi_fail_mode(not wifi_connected)
+
+        # prepusti led_status-u da sam odradi treptanje
+        led_status.tick()
                 
         now = time.time() + UNIX_EPOCH_OFFSET
 
@@ -338,50 +351,49 @@ def main():
 
             aqi_level = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
             led_status.set_aqi_level(aqi_level)
-
-            previous_minute_measurement = last_minute_measurement
             
             supported = sensor_manager.get_supported_fields()
             normalized = {}
+            
             for key in supported:
-                normalized[key] = measurement.get(key) if measurement and key in measurement else None
+                if measurement and key in measurement and measurement[key] is not None:
+                    normalized[key] = measurement[key]
             
             # standardizovan payload za MQTT
             payload = {
                 "device": uid,
                 "ts": now,
-                "fw": device_meta.get("version"),
-                "geo": {
-                    "lat": device_meta.get("lat"),
-                    "lon": device_meta.get("lon"),
-                    "altitude": device_meta.get("altitude"),
-                },
                 "data": normalized or {}
             }
-            last_minute_measurement = payload
+
+            # external send (sensor.community...)
+            if measurement:
+                gc.collect()
+                external_mgr.send_all(measurement)
 
             # publish na MQTT
             if mqtt_client_instance:
+                gc.collect()
                 minute_topic = "{}/{}/minute".format(base_topic, uid)
+                message = ujson.dumps(payload)
                 mqtt_client_instance, ok, net_err = mqtt_client.publish(
                     mqtt_client_instance,
                     config,
                     minute_topic.encode(),
-                    ujson.dumps(payload),
+                    message,
                     retain=False,
                     message_type="minute",
                 )
+                
                 if not ok and net_err:
                     # čuvamo samo ako je mreža, i samo u RAM
-                    print("Not sent to MQTT, Network error.", payload)
-                    add_minute_to_ram(minute_topic, ujson.dumps(payload))
+                    print("Not sent to MQTT, Network error.")
+                    add_minute_to_ram(minute_topic, message)
                 else:
-                    print("Sent to MQTT", payload)
+                    print("Sent to MQTT. PM2.5: ", pm25, "PM10: ", pm10)
 
-            # external send (sensor.community...)
-            if measurement:
-                external_mgr.send_all(measurement)
-
+            gc.collect()
+            
             # agregacija
             if measurement:
                 minute_measurements_buffer.append(measurement)
@@ -399,7 +411,7 @@ def main():
                             retain=False,
                             message_type="aggregate",
                         )
-                        # ovde NIŠTA ne radimo – mqtt_client će sam upisati u fajl
+                        # ovde NIŠTA ne radimo – MqttClient će sam upisati u fajl
                         # ako je mreža pala
                     minute_measurements_buffer = []
 
@@ -418,7 +430,10 @@ def main():
             mqtt_client_instance = flush_minute_ram(mqtt_client_instance, config)
             last_flush_ts = now
 
-        time.sleep_ms(150)
+        if led_status.is_off():
+            led_status.restore()
+
+        time.sleep_ms(1000)
 
 # auto-start
 main()

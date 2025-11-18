@@ -1,58 +1,87 @@
 # led_status.py
 import machine, neopixel
+import time
 
 PIN = 7
 NUM = 1
-BRIGHT = 20
-X_BRIGHT = 200
+BRIGHT = 45
+X_BRIGHT = 150
 
 np = neopixel.NeoPixel(machine.Pin(PIN), NUM)
 
 # osnovne boje (r, g, b)
-COLOR_BOOT = (BRIGHT, BRIGHT, 0)          # žućkasto kad se diže
+COLOR_BOOT = (180, 120, 0)          # žućkasto kad se diže
 COLOR_OK = (0, BRIGHT, 0)                 # zeleno kad je online
-COLOR_WIFI_FAIL = (X_BRIGHT, 0, 0)        # crveno kad nije online
+COLOR_WIFI_FAIL = (220, 0, 0)        # crveno kad nije online
 
 # merenje = belo (kratko)
-COLOR_MEASURING = (BRIGHT, BRIGHT, BRIGHT)
+COLOR_MEASURING = (80, 80, 80)
+COLOR_UPLOADING = (0, 60, 180)
 
 # AQI boje (sens.comm stil / 6 nivoa)
 # 0 good, 1 fair, 2 moderate, 3 poor, 4 very poor, 5 extremely poor
-COLOR_AQI = [
-    (0, 180, 180),   # good - tirkizno
-    (0, 150, 10),   # fair - zelenkasto
-    (180, 160, 0),   # moderate - žućkasto
-    (200, 0, 0),     # poor - crveno
-    (150, 0, 50),    # very poor - bordo
-    (120, 0, 120),   # extremely poor - ljubičasto
+AQI_COLORS = [
+    (0, 200, 120),   # good - tirkizno
+    (0, 160, 40),   # fair - zelenkasto
+    (200, 180, 0),   # moderate - žućkasto
+    (X_BRIGHT, 70, 0), # 3 - narandžasto / lošije
+    (X_BRIGHT, 0, 0),             # 4 - crveno / loše
+    (X_BRIGHT, 0, 90),      # 5 - ljubičasto / vrlo loše
 ]
 
-_current = None          # šta trenutno svetli
+_current = (0, 0, 0)     # šta trenutno svetli
 _stable_color = None     # šta da vratimo u restore (obično AQI)
+
+# Wi-Fi treptanje
+_WIFI_BLINK_PERIOD_MS = 1000
+_wifi_blink_enabled = False
+_wifi_last_toggle_ms = 0
+_wifi_on = False  # da li je trenutno upaljena crvena u blink modu
 
 def _show(color):
     global _current
     _current = color
-    np[0] = color
-    np.write()
+    try:
+        np[0] = color
+        np.write()
+    except Exception as ex:
+        print("LED error:", ex)
+
 
 def set_boot():
     global _stable_color
     _stable_color = COLOR_BOOT
     _show(COLOR_BOOT)
 
+
 def set_ok():
     global _stable_color
     _stable_color = COLOR_OK
     _show(COLOR_OK)
 
-def set_wifi_fail():
-    # ovo je status koji ima veći prioritet od AQI
-    _show(COLOR_WIFI_FAIL)
 
 def set_measuring():
-    # kratko belo – posle ovoga u kodu pozoveš restore() ili set_aqi_level
+    """Prolazno belo, ne menja _stable_color."""
     _show(COLOR_MEASURING)
+
+
+def set_uploading():
+    """Prolazna plava, ne menja _stable_color."""
+    _show(COLOR_UPLOADING)
+
+
+def is_off():
+    # Dok je Wi-Fi treptanje aktivno, ne tretiramo LED kao "off",
+    # da main ne bi radio restore() na žutu / AQI boju.
+    try:
+        if _wifi_blink_enabled:
+            return False
+    except NameError:
+        # ako iz nekog razloga promenljiva ne postoji, fallback
+        pass
+
+    return _current == (0, 0, 0)
+
 
 def set_aqi_level(level: int):
     """
@@ -61,18 +90,59 @@ def set_aqi_level(level: int):
     """
     global _stable_color
     if level is None:
-        # ako nemamo podatak, ne diramo boju
         return
     if level < 0:
         level = 0
-    if level >= len(COLOR_AQI):
-        level = len(COLOR_AQI) - 1
-    color = COLOR_AQI[level]
+    if level >= len(AQI_COLORS):
+        level = len(AQI_COLORS) - 1
+
+    color = AQI_COLORS[level]
     _stable_color = color
     _show(color)
 
+
+def set_wifi_fail_mode(enabled: bool = True):
+    """
+    Uključi/isključi blink mod za Wi-Fi fail.
+    Ne radi sam treptanje – to radi tick(), samo postavlja stanje.
+    """
+    global _wifi_blink_enabled, _wifi_last_toggle_ms, _wifi_on
+
+    if enabled and not _wifi_blink_enabled:
+        _wifi_blink_enabled = True
+        _wifi_last_toggle_ms = time.ticks_ms()
+        _wifi_on = True
+        _show(COLOR_WIFI_FAIL)  # start sa upaljenom crvenom
+    elif not enabled and _wifi_blink_enabled:
+        _wifi_blink_enabled = False
+        _wifi_on = False
+        # vrati se na “normalnu” stabilnu boju
+        restore()
+
+
+def tick():
+    """
+    Pozivaj je u glavnoj petlji (na svakom ciklusu ili periodično).
+    Ako je Wi-Fi blink mod aktivan, brine o treptanju.
+    """
+    global _wifi_last_toggle_ms, _wifi_on
+
+    if not _wifi_blink_enabled:
+        return
+
+    now = time.ticks_ms()
+    if time.ticks_diff(now, _wifi_last_toggle_ms) >= _WIFI_BLINK_PERIOD_MS:
+        _wifi_last_toggle_ms = now
+        _wifi_on = not _wifi_on
+        if _wifi_on:
+            _show(COLOR_WIFI_FAIL)
+        else:
+            _show((0, 0, 0))
+
+
 def set_off():
     _show((0, 0, 0))
+
 
 def restore():
     """Vrati na poslednje 'stabilno' stanje (npr. posle merenja)."""
@@ -80,6 +150,5 @@ def restore():
     if _stable_color is not None:
         _show(_stable_color)
     elif _current is not None:
-        # fallback
         np[0] = _current
         np.write()

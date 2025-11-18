@@ -1,4 +1,4 @@
-# sensor_manager.py
+# sensors/manager.py
 
 class SensorManager:
     """
@@ -26,3 +26,4 @@ class SensorManager:
                 # jednostavno lepljenje – kasnije možemo da rešavamo konflikte
                 result.update(m)
         return result
+
