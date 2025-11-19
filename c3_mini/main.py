@@ -17,6 +17,9 @@ import setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
 from maintenance_handler import MaintenanceHandler
+from ota import ota_manager
+from ota import ota_state
+
 try:
     from uploader.sensor_community import get_last_sc
 except ImportError:
@@ -211,6 +214,28 @@ def flush_minute_ram(mqtt_client_instance, config):
     minute_ram_buffer = still_pending
     return mqtt_client_instance
 
+def run_ota_update(config):
+    print("Starting OTA update…")
+
+    # 1) LED – OTA mode (biramo mod kasnije)
+    try:
+        led_status.set_mode("OTA_IN_PROGRESS")
+    except:
+        pass
+
+    # 2) Start OTA
+    ok = ota_manager.start_update_from_manifest()
+
+    # Ako OTA uspe, reset je već odrađen u ota_manager.start_update…
+    # Ovaj kod se izvršava samo ako OTA NIJE uspela.
+    print("OTA update failed.")
+    try:
+        led_status.set_mode("OTA_ERROR")
+    except:
+        pass
+
+    return False
+
 def main():
     # 1. ako je postavljen flag - idi u setup mod
     go_setup = False
@@ -306,6 +331,11 @@ def main():
     last_minute_ts = unix_ts
     last_flush_ts = unix_ts
     #last_wifi_blink = time.ticks_ms()
+    
+    # Ako smo u TRY_UPDATE fazi, markiraj firmware kao uspešan
+    state = ota_state.load_state()
+    if state.get("state") == ota_state.STATE_TRY_UPDATE:
+        ota_state.mark_successful("test-ota-1")  # ovde će kasnije ići prava verzija
 
     sta = network.WLAN(network.STA_IF)
     while True:
@@ -328,6 +358,16 @@ def main():
                 mqtt_client_instance.check_msg()
             except:
                 pass
+        
+        # OTA
+        if maintenance is not None:
+            requested, ota_data = maintenance.consume_ota_request()
+            if requested:
+                print("OTA requested, pausing main loop…")
+                # Ovde izlazimo iz glavne petlje i radimo OTA
+                run_ota_update(config)
+                # Ako OTA uspe, ovo se nikad ne izvrši (reset).
+                # Ako ne uspe, vraćamo se u normalan rad (ili ne, po želji).
 
         if now - last_minute_ts >= 60:
             print("⏱ minute", minute_counter)

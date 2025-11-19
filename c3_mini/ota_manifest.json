@@ -1,0 +1,12 @@
+{
+  "device_type": "pengy-wifi",
+  "firmware_version": "test-ota-1",
+  "total_size": 2000,
+  "files": [
+    {
+      "path": "uploader/pengy_api.py",
+      "size": 2000,
+      "sha256": ""
+    }
+  ]
+}
