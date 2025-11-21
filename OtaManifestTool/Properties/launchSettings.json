@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "OtaManifestTool": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Daniel\\Projects\\pengy\\OTA\\v1 http://my-server/pengy/ota/v1 pengy-wifi 2025-11-21_01",
+      "workingDirectory": "C:\\Daniel\\Projects\\pengy\\OTA\\v1"
+    }
+  }
+}
