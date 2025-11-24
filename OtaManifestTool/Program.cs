@@ -41,7 +41,17 @@ foreach (var fullPath in otaFiles)
         ? relPath[..^4]
         : relPath;
 
-    var url = $"{baseUrl}/{relPath}";
+    string url;
+    if (!string.IsNullOrEmpty(baseUrl))
+    {
+        // relativni URL (samo ime .ota fajla)
+        url = relPath;
+    }
+    else
+    {
+        // baseUrl prazan → url je apsolutan (kao dosad)
+        url = relPath.StartsWith("http") ? relPath : $"{relPath}";
+    }
 
     var fi = new FileInfo(fullPath);
     long size = fi.Length;
@@ -65,6 +75,7 @@ var manifest = new ManifestRoot
     DeviceType = deviceType,
     FirmwareVersion = version,
     TotalSize = totalSize,
+    BaseUrl = baseUrl,
     Files = files
 };
 
@@ -91,6 +102,9 @@ class ManifestRoot
     [JsonPropertyName("device_type")] public string DeviceType { get; set; }
     [JsonPropertyName("firmware_version")] public string FirmwareVersion { get; set; }
     [JsonPropertyName("total_size")] public long TotalSize { get; set; }
+
+    [JsonPropertyName("base_url")] public string BaseUrl { get; set; } // NEW
+
     [JsonPropertyName("files")] public List<ManifestFile> Files { get; set; }
 }
 

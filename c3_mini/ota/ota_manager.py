@@ -14,7 +14,7 @@ MANIFEST_FILE = "ota_manifest.json"
 
 # Hardkodirani URL za sada – promeni ga kad budeš imao pravi server.
 # Po želji kasnije dodaj u config["ota"]["manifest_url"] pa čitaj odatle.
-DEFAULT_MANIFEST_URL = "http://example.com/pengy/ota/manifest.json"
+DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json"
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +147,26 @@ def _has_enough_space(total_size, safety_factor=2.0):
 # ---------------------------------------------------------------------------
 # Download pojedinačnog fajla sa SHA256 proverom
 
+def _make_final_url(manifest, file_entry):
+    url = file_entry.get("url")
+    if not url:
+        return None
+
+    # Ako je apsolutan URL – koristi ga direktno
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+
+    # Inače sklapa se sa base_url
+    base = manifest.get("base_url") or ""
+    if not base:
+        # base nema → pretpostavi da je url već pun
+        return url
+
+    if not base.endswith("/"):
+        base += "/"
+
+    return base + url
+
 def _download_file_http(file_entry):
     """
     file_entry:
@@ -158,7 +178,8 @@ def _download_file_http(file_entry):
       }
     """
     path = file_entry.get("path")
-    url = file_entry.get("url")
+    manifest = file_entry.get("_manifest")
+    url = _make_final_url(manifest, file_entry)
     expected_sha = (file_entry.get("sha256") or "").lower()
     size = int(file_entry.get("size") or 0)
 
@@ -248,7 +269,9 @@ def _download_all_files(manifest):
         return False
 
     for f in files:
+        f["_manifest"] = manifest  # privremeno
         ok = _download_file_http(f)
+        del f["_manifest"]
         if not ok:
             return False
 
