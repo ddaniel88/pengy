@@ -1,4 +1,4 @@
-# === PYTHON / MICROPYTHON ===
+# ========== PYTHON / MICROPYTHON ==========
 __pycache__/
 *.pyc
 *.pyo
@@ -15,35 +15,91 @@ dist/
 *.manifest
 *.spec
 
-# === IDE / EDITOR ===
-.vscode/
+# ========== C# / .NET / VISUAL STUDIO ==========
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.dll
+*.pdb
+*.exe
+*.log
+
+# Build folders
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+# VS cache
+.vs/
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Logs & coverage
+*.log
+logs/
+*.coverage
+*.coveragexml
+
+# Publish
+publish/
+
+# Rider / JetBrains
 .idea/
+*.sln.iml
+
+# Resharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Temporary ASP.NET files
+*.temp
+tmp/
+temp/
+
+# Azure
+*.PublishSettings
+local.settings.json
+
+# Entity Framework
+Migrations/
+
+# ========== IDE / EDITOR ==========
+.vscode/
 *.code-workspace
 *.sublime-project
 *.sublime-workspace
 
-# === OS SPECIFIČNO ===
+# ========== OS SPECIFIČNO ==========
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# === ENV I KONFIGURACIJE ===
+# ========== ENV / CONFIG ==========
 .env
 .env.*
 config.json
-wifi_login.html      # ako generišeš novi fajl na uređaju
-wifi_credentials.txt # ili drugi lokalni fajl s lozinkama
+wifi_login.html
+wifi_credentials.txt
 secrets.json
 credentials.json
 
-# === LOGS ===
-*.log
-logs/
-log/
-tmp/
-temp/
-
-# === FIRMWARE / BOARD ARTIFACTS ===
+# ========== FIRMWARE / BOARD ARTIFACTS ==========
 *.bin
 *.hex
 *.elf
@@ -52,24 +108,24 @@ temp/
 *.obj
 *.o
 
-# === UPLOAD I DEPLOY ===
+# ========== UPLOAD/DEPLOY ==========
+upload/
+deploy/
+flash/
 *.zip
 *.tar
 *.gz
 *.tar.gz
 *.tar.bz2
 *.tar.xz
-upload/
-deploy/
-flash/
 
-# === TESTS ===
+# ========== TESTS ==========
 .coverage
 htmlcov/
 .tox/
 .pytest_cache/
 
-# === MISC ===
+# ========== MISC ==========
 notes/
 scratch/
 old/

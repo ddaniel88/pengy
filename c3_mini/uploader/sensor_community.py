@@ -2,6 +2,7 @@
 import time
 import ujson
 import led_status
+import gc
 from uploader.base import BaseUploader
 
 # pokušaćemo da koristimo urequests (najčešće postoji na ESP32)
@@ -17,10 +18,6 @@ class SensorCommunityUploader(BaseUploader):
     - radi na principu buffera: skuplja merenja dok ne istekne interval
     - na isteku intervala pravi prosek i šalje 2 POST-a (PM i meteo)
     """
-    
-    last_sc_payload = None
-    last_sc_response = None
-    last_sc_xpin = None
 
     def __init__(self, config: dict, device: dict):
         super().__init__(config, device)
@@ -51,6 +48,8 @@ class SensorCommunityUploader(BaseUploader):
         # interno stanje
         self.last_sent = 0  # epoch u sekundama
         self.buffer = []    # ovde čuvamo merenja dok ne istekne interval
+        
+        self._last_sent = None   # None | "pm" | "meteo"
 
     # ExternalManager prvo pita ovo, pa tek onda send()
     def is_enabled(self) -> bool:
@@ -67,8 +66,6 @@ class SensorCommunityUploader(BaseUploader):
         Mi ga samo dodamo u buffer, i ako je vreme - pošaljemo agregat.
         """
         
-        led_status.set_uploading()
-        
         # dodaj merenje u buffer
         if measurement:
             self.buffer.append(measurement)
@@ -84,28 +81,50 @@ class SensorCommunityUploader(BaseUploader):
             # nema podataka, samo osveži vreme
             self.last_sent = now_ts
             return
-
-        # pošalji dva seta podataka
+        
+        led_status.set_uploading()
+        
         try:
             self._send_pm(avg)
+            gc.collect()
             self._send_meteo(avg)
+            gc.collect()
         except Exception as exc:
             # nećemo da puknemo glavni loop
+            led_status.set_off()
             print("sensor.community send error:", exc)
+        
+        """
+        # pošalji dva seta podataka
+        try:
+            if self._last_sent == "pm":
+                sent = self._send_meteo(avg)
+                if sent:
+                    self._last_sent = "meteo"
+                else:
+                    # fallback na PM
+                    sent = self._send_pm(avg)
+                    if sent:
+                        self._last_sent = "pm"
+            else:
+                sent = self._send_pm(avg)
+                if sent:
+                    self._last_sent = "pm"
+                else:
+                    sent = self._send_meteo(avg)
+                    if sent:
+                        self._last_sent = "meteo"
+        except Exception as exc:
+            # nećemo da puknemo glavni loop
+            led_status.set_off()
+            print("sensor.community send error:", exc)
+        """
 
         # resetuj stanje
         self.buffer = []
         self.last_sent = now_ts
         
-        led_status.set_ok()
-        
-    @classmethod
-    def get_last_sc(cls):
-        return {
-            "x_pin": cls.last_sc_xpin,
-            "payload": cls.last_sc_payload,
-            "response": cls.last_sc_response,
-        }    
+        led_status.set_off()
 
     # ------------------------------------------------------------------
     # Pomoćne metode
@@ -164,7 +183,7 @@ class SensorCommunityUploader(BaseUploader):
 
         # ništa nema, nema smisla da šaljemo ovaj deo
         if pm1 is None and pm25 is None and pm10 is None:
-            return
+            return False
 
         payload = {
             "software_version": self.software_version,
@@ -193,9 +212,11 @@ class SensorCommunityUploader(BaseUploader):
 
         # ako nema ništa u listi, nemoj da šalješ
         if not payload["sensordatavalues"]:
-            return
+            return False
 
         self._post_json(payload, x_pin="1")
+        print("PM2.5: ", pm25, "    PM10: ", pm10)
+        return True
 
     def _send_meteo(self, data: dict):
         """
@@ -207,7 +228,7 @@ class SensorCommunityUploader(BaseUploader):
 
         # ako nemamo nijedno od ovoga, ne šaljemo
         if temp is None and hum is None and press is None:
-            return
+            return False
 
         # ako je pritisak u Pa (~100000), pretvori u hPa
         if press is not None and press > 2000:
@@ -237,9 +258,10 @@ class SensorCommunityUploader(BaseUploader):
             })
 
         if not payload["sensordatavalues"]:
-            return
+            return False
 
         self._post_json(payload, x_pin="11")
+        return True
 
     def _post_json(self, payload: dict, x_pin: str):
         """
@@ -247,45 +269,48 @@ class SensorCommunityUploader(BaseUploader):
         Koristimo urequests ako postoji.
         """
         
-        cls = self.__class__  # da možemo da upišemo u class-level promenljive
-        
+        if not self.enabled:
+            return
+
+        if self.base_url is None or self.sensor_id is None:
+            return
+
         if not requests:
-            # ako nemamo urequests na firmwaru, samo štampaj da vidimo payload
-            print("SC payload (no requests):", x_pin, payload)
-            
-            cls.last_sc_payload = payload
-            cls.last_sc_xpin = x_pin
-            cls.last_sc_response = {"error": "urequests not available"}
-            
+            # nema urequests na firmwaru
+            print("SC disabled (no urequests)")
             return
 
         headers = {
             "Content-Type": "application/json",
             "X-Pin": x_pin,
             "X-Sensor": self.sensor_id,
-            "X-MAC-ID": self.sensor_id,
         }
 
-        print("SC POST", x_pin, payload)
-
-        # sensor.community vraća 201 kad je ok
-        resp = requests.post(
-            self.base_url,
-            headers=headers,
-            data=ujson.dumps(payload),
-        )
-        # ako hoćeš, ovde možeš da proveriš status
-        print("SC RESP:", resp.status_code, resp.text)
-        cls.last_sc_payload = payload
-        cls.last_sc_xpin = x_pin
-        cls.last_sc_response = {
-            "status": resp.status_code,
-            "text": resp.text,
-        }
+        print("SC POST", x_pin)
         
+        resp = None
         try:
+            gc.collect()
+            body = ujson.dumps(payload)
+            gc.collect()
+
+            # sensor.community vraća 201 kad je ok
+            resp = requests.post(
+                self.base_url,
+                headers=headers,
+                data=body,
+            )
+            # ako hoćeš, ovde možeš da proveriš status
+            print("SC RESP:", resp.status_code)
             resp.close()
-        except Exception:
+        except Exception as exc:
             print("SC post error:", exc)
-            cls.last_sc_response = {"error": str(exc)}
             pass
+        finally:
+            if resp:
+                try: resp.close()
+                except: pass
+            body = None
+            headers = None
+            payload = None
+            gc.collect()

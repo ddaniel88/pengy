@@ -16,6 +16,7 @@ except ImportError:
 
 class PengyApiUploader(BaseUploader):
     """
+    THIS IS UPDATED VERSION TO 2025-11-25-01
     Skeleton uploader za tvoj budući API.
     Ideja:
     - čita config["external"]["pengy_api"]
