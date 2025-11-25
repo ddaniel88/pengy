@@ -21,8 +21,8 @@
         "lat": 43.32451475,
         "lon": 21.91667465,
         "altitude": 210,
+        "ground_offset": 20.0,
         "status": "active",
-        "version": "1.0.0",
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity"]
     },
     "sampling": {

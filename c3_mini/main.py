@@ -130,12 +130,13 @@ def handle_status_request(sock):
             unix_ts = now + UNIX_EPOCH_OFFSET
             
             info = {
-                "fw": device_meta.get("version"),
+                "fw": FIRMWARE_VERSION,
                 "device": device_meta.get("uid"),
                 "geo": {
                     "lat": device_meta.get("lat"),
                     "lon": device_meta.get("lon"),
                     "altitude": device_meta.get("altitude"),
+                    "ground_offset": device_meta.get("ground_offset"),
                 },
                 "streams": device_meta.get("streams", []),
                 "ts": unix_ts
@@ -243,7 +244,7 @@ def run_ota_update(config):
     return False
 
 def main():
-    print("This is updated V1 main")
+    print("This is updated V0 main")
     # 1. ako je postavljen flag - idi u setup mod
     go_setup = False
     try:
@@ -340,10 +341,6 @@ def main():
     #last_wifi_blink = time.ticks_ms()
     
     # Ako smo u TRY_UPDATE fazi, markiraj firmware kao uspešan
-    state = ota_state.load_state()
-    if state.get("state") == ota_state.STATE_TRY_UPDATE:
-        ota_state.mark_successful("test-ota-1")  # ovde će kasnije ići prava verzija
-        
     state = ota_state.load_state()
     if state.get("state") == ota_state.STATE_TRY_UPDATE:
         ota_state.mark_successful(FIRMWARE_VERSION)
