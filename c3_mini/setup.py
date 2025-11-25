@@ -46,6 +46,13 @@ DEFAULT_CONFIG = {
             "api_key": ""
         }
     },
+    "ota": {
+        "channel": "latest",
+        "latest_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json",
+        "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json",
+        # opciono, za ručni override
+        "manifest_url": ""
+    },
     "security": {
         "admin_pin": "1234"
     }
@@ -59,11 +66,29 @@ def load_config_or_default():
             cfg = ujson.loads(f.read())
     except Exception:
         cfg = DEFAULT_CONFIG
-    # obavezno osiguraj security
+        
+    # security
     if "security" not in cfg:
         cfg["security"] = {"admin_pin": "1234"}
     if "admin_pin" not in cfg["security"]:
         cfg["security"]["admin_pin"] = "1234"
+
+    # ota
+    if "ota" not in cfg:
+        cfg["ota"] = DEFAULT_CONFIG["ota"].copy()
+
+    ota_cfg = cfg["ota"]
+    if "channel" not in ota_cfg:
+        ota_cfg["channel"] = "latest"
+    if "latest_manifest_url" not in ota_cfg:
+        ota_cfg["latest_manifest_url"] = DEFAULT_CONFIG["ota"]["latest_manifest_url"]
+    if "beta_manifest_url" not in ota_cfg:
+        ota_cfg["beta_manifest_url"] = DEFAULT_CONFIG["ota"]["beta_manifest_url"]
+    if "manifest_url" not in ota_cfg:
+        ota_cfg["manifest_url"] = ""
+
+    cfg["ota"] = ota_cfg
+
     return cfg
 
 def save_config(cfg: dict):
@@ -294,6 +319,20 @@ def run_setup_mode(timeout_seconds=180):
                 pengy_cfg["base_url"] = form.get("pengy_base_url", pengy_cfg.get("base_url", ""))
                 pengy_cfg["api_key"] = form.get("pengy_api_key", pengy_cfg.get("api_key", ""))
                 cfg["external"]["pengy_api"] = pengy_cfg
+                
+                # OTA
+                ota_cfg = cfg.get("ota", {})
+                ota_cfg["channel"] = form.get("ota_channel", ota_cfg.get("channel", "latest"))
+                ota_cfg["latest_manifest_url"] = form.get(
+                    "ota_latest_manifest_url",
+                    ota_cfg.get("latest_manifest_url", "")
+                )
+                ota_cfg["beta_manifest_url"] = form.get(
+                    "ota_beta_manifest_url",
+                    ota_cfg.get("beta_manifest_url", "")
+                )
+                # manifest_url
+                cfg["ota"] = ota_cfg
 
                 save_config(cfg)
                 client.send(b"HTTP/1.0 200 OK\r\n\r\nSaved. Rebooting...")

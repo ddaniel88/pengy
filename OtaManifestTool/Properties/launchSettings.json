@@ -2,7 +2,7 @@
   "profiles": {
     "OtaManifestTool": {
       "commandName": "Project",
-      "commandLineArgs": "C:\\Daniel\\Projects\\pengy\\OTA\\latest http://my-server/pengy/ota/v1 pengy-wifi 2025-11-24_01",
+      "commandLineArgs": "C:\\Daniel\\Projects\\pengy\\OTA\\latest https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest pengy-wifi 2025-11-25_01",
       "workingDirectory": "C:\\Daniel\\Projects\\pengy\\OTA\\latest"
     }
   }

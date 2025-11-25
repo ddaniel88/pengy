@@ -24,8 +24,8 @@ try:
     from uploader.sensor_community import get_last_sc
 except ImportError:
     get_last_sc = None
-
-led_status.set_boot()
+    
+FIRMWARE_VERSION = "2025-11-21_01"  # ista kao u manifestu
 
 CONFIG_FILE = "config.json"
 
@@ -34,6 +34,8 @@ UNIX_EPOCH_OFFSET = 946684800  # sekundi od 1970 do 2000
 # RAM buffer za minutne
 MINUTE_RAM_LIMIT = 30
 minute_ram_buffer = []
+
+led_status.set_boot()
 
 # globali za status
 last_aggregated_measurement = None
@@ -341,6 +343,10 @@ def main():
     state = ota_state.load_state()
     if state.get("state") == ota_state.STATE_TRY_UPDATE:
         ota_state.mark_successful("test-ota-1")  # ovde će kasnije ići prava verzija
+        
+    state = ota_state.load_state()
+    if state.get("state") == ota_state.STATE_TRY_UPDATE:
+        ota_state.mark_successful(FIRMWARE_VERSION)
 
     sta = network.WLAN(network.STA_IF)
     while True:

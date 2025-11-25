@@ -74,14 +74,34 @@ def _save_manifest_local(manifest):
 
 def _get_manifest_url(config=None):
     """
-    Ako u configu postoji config["ota"]["manifest_url"], koristi njega,
-    inače koristi DEFAULT_MANIFEST_URL.
+    Prioritet:
+      1) ako postoji config["ota"]["manifest_url"] i nije prazan -> koristi to
+      2) u suprotnom, koristi channel (latest / beta) i odgovarajući URL
+      3) ako ništa nema, padni na DEFAULT_MANIFEST_URL
     """
-    if config:
-        ota_cfg = config.get("ota") or {}
-        url = ota_cfg.get("manifest_url")
-        if url:
-            return url
+    if not config:
+        return DEFAULT_MANIFEST_URL
+
+    ota_cfg = config.get("ota") or {}
+
+    # 1) direktni override, ako je podešen
+    direct = (ota_cfg.get("manifest_url") or "").strip()
+    if direct:
+        return direct
+
+    # 2) kanal: latest / beta
+    channel = (ota_cfg.get("channel") or "latest").lower()
+
+    latest_url = (ota_cfg.get("latest_manifest_url") or "").strip()
+    beta_url = (ota_cfg.get("beta_manifest_url") or "").strip()
+
+    if channel == "beta" and beta_url:
+        return beta_url
+
+    if latest_url:
+        return latest_url
+
+    # 3) fallback
     return DEFAULT_MANIFEST_URL
 
 

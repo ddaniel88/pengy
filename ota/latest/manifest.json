@@ -1,19 +1,20 @@
 {
   "device_type": "pengy-wifi",
-  "firmware_version": "2025-11-21_01",
-  "total_size": 17643,
+  "firmware_version": "2025-11-25_01",
+  "total_size": 17879,
+  "base_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest",
   "files": [
     {
       "path": "main.py",
-      "url": "http://192.168.0.16:8000/main.py.ota",
-      "size": 15092,
-      "sha256": "b60433ac1753af0be7815ea931f7b87cb577f7adf96b242d23cc8fc118116354"
+      "url": "main.py.ota",
+      "size": 15317,
+      "sha256": "196f146e51bb773946073dd726bbe5e53e0655a1f73536904eb3032103d9e610"
     },
     {
       "path": "uploader/pengy_api.py",
-      "url": "http://192.168.0.16:8000/uploader/pengy_api.py.ota",
-      "size": 2551,
-      "sha256": "d808fa79df1faa0fa821f57831cf7eb529e81ca906d5184c7c6a20a3337c2120"
+      "url": "uploader/pengy_api.py.ota",
+      "size": 2562,
+      "sha256": "efdb8c4d37d7a0ea0b5e6df2dc24262a3ed8cd9d74289f59ae17e8df65beff0a"
     }
   ]
 }

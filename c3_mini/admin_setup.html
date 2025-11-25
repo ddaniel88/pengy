@@ -171,6 +171,21 @@
       <input id="pengy_base_url" name="pengy_base_url" type="text" />
       <label for="pengy_api_key">API key</label>
       <input id="pengy_api_key" name="pengy_api_key" type="text" />
+      
+      <!-- OTA -->
+      <div class="section">OTA</div>
+
+      <label for="ota_channel">OTA channel</label>
+      <select id="ota_channel" name="ota_channel">
+        <option value="latest">Latest (stable)</option>
+        <option value="beta">Beta</option>
+      </select>
+
+      <label for="ota_latest_manifest_url">Latest manifest URL</label>
+      <input id="ota_latest_manifest_url" name="ota_latest_manifest_url" type="text" />
+
+      <label for="ota_beta_manifest_url">Beta manifest URL</label>
+      <input id="ota_beta_manifest_url" name="ota_beta_manifest_url" type="text" />
 
       <button type="submit">Sačuvaj i restartuj</button>
     </form>

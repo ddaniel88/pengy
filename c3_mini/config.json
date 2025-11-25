@@ -4,7 +4,9 @@
         "password": "qdimitrov123"
     },
     "ota": {
-        "manifest_url": "http://192.168.0.16:8000/manifest.json"
+        "channel": "latest",
+        "latest_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json",
+        "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json"
     },
     "mqtt": {
         "host": "test.mosquitto.org",
