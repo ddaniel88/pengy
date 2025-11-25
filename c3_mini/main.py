@@ -382,7 +382,7 @@ def main():
             led_status.set_measuring()
             measurement = sensor_manager.measure_minute_all(
                 samples_count=samples_per_minute,
-                interval_seconds=1,
+                interval_seconds=2,
                 trim_extremes=trim_extremes
             )
             

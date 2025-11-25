@@ -153,8 +153,8 @@ class Sen55Sensor(BaseEnvSensor):
 
     def measure_one_minute(
         self,
-        samples_count: int = 5,
-        interval_seconds: int = 1,
+        samples_count: int = 10,
+        interval_seconds: int = 2,
         trim_extremes: bool = True,
     ):
         """
@@ -168,7 +168,7 @@ class Sen55Sensor(BaseEnvSensor):
         try:
             _start_measurement()
             # kratki warmup da se stabilizuje
-            time.sleep(1)
+            time.sleep(5)
         except OSError:
             # I2C problem već na startu – ne rušimo sistem
             return self._last_good if self.fallback_to_last else None

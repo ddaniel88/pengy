@@ -18,7 +18,7 @@ class SensorManager:
                 pass
         return list(all_fields)
 
-    def measure_minute_all(self, samples_count=5, interval_seconds=1, trim_extremes=True):
+    def measure_minute_all(self, samples_count=10, interval_seconds=2, trim_extremes=True):
         result = {}
         for s in self.sensors:
             m = s.measure_one_minute(samples_count, interval_seconds, trim_extremes)

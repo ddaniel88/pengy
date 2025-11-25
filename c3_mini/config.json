@@ -26,7 +26,7 @@
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity"]
     },
     "sampling": {
-        "samples_per_min": 5,
+        "samples_per_min": 10,
         "trim": true,
         "agg_window": 10
     },    
