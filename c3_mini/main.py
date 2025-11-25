@@ -10,9 +10,11 @@ import os
 import aqi_utils
 import gc
 
-from sensors.sen55 import Sen55Sensor
-from sensors.manager import SensorManager
 from net import mqtt_client
+from sensors.sen55 import Sen55Sensor
+from sensors.sps30 import Sps30Sensor
+from sensors.bme280 import Bme280Sensor
+from sensors.manager import SensorManager
 import setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
@@ -293,7 +295,9 @@ def main():
     
     # senzori
     sen55 = Sen55Sensor()
-    sensor_manager = SensorManager([sen55])
+    sps30 = Sps30Sensor()
+    bme280 = Bme280Sensor()
+    sensor_manager = SensorManager([sps30, bme280])
 
     # MQTT
     mqtt_client_instance = mqtt_client.connect_mqtt(config)
