@@ -1,4 +1,4 @@
-# sensor_base.py
+# sensors/base.py
 
 class BaseEnvSensor:
     """

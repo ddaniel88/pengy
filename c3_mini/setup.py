@@ -23,8 +23,8 @@ DEFAULT_CONFIG = {
         "lat": 43.32451475,
         "lon": 21.91667465,
         "altitude": 210,
+        "ground_offset": 1.5,
         "status": "active",
-        "version": "1.0.0",
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity"],
     },
     "sampling": {
@@ -46,6 +46,13 @@ DEFAULT_CONFIG = {
             "api_key": ""
         }
     },
+    "ota": {
+        "channel": "latest",
+        "latest_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json",
+        "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json",
+        # opciono, za ručni override
+        "manifest_url": ""
+    },
     "security": {
         "admin_pin": "1234"
     }
@@ -59,11 +66,29 @@ def load_config_or_default():
             cfg = ujson.loads(f.read())
     except Exception:
         cfg = DEFAULT_CONFIG
-    # obavezno osiguraj security
+    
+    # security
     if "security" not in cfg:
         cfg["security"] = {"admin_pin": "1234"}
     if "admin_pin" not in cfg["security"]:
         cfg["security"]["admin_pin"] = "1234"
+
+    # ota
+    if "ota" not in cfg:
+        cfg["ota"] = DEFAULT_CONFIG["ota"].copy()
+
+    ota_cfg = cfg["ota"]
+    if "channel" not in ota_cfg:
+        ota_cfg["channel"] = "latest"
+    if "latest_manifest_url" not in ota_cfg:
+        ota_cfg["latest_manifest_url"] = DEFAULT_CONFIG["ota"]["latest_manifest_url"]
+    if "beta_manifest_url" not in ota_cfg:
+        ota_cfg["beta_manifest_url"] = DEFAULT_CONFIG["ota"]["beta_manifest_url"]
+    if "manifest_url" not in ota_cfg:
+        ota_cfg["manifest_url"] = ""
+
+    cfg["ota"] = ota_cfg
+
     return cfg
 
 def save_config(cfg: dict):
@@ -108,15 +133,74 @@ p{font-size:.65rem;color:#555;margin-bottom:.75rem}
 </body></html>
 """
 
+def _html_escape(s):
+    s = str(s)
+    s = s.replace("&", "&amp;")
+    s = s.replace("<", "&lt;")
+    s = s.replace(">", "&gt;")
+    s = s.replace('"', "&quot;")
+    return s
+
 # puna admin strana (mala ali sa svim poljima)
-def admin_html():
+def admin_html(cfg):
     try:
         with open("admin_setup.html", "r") as f:
-            return "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n" + f.read()
+            html = f.read()
     except Exception as e:
         print("⚠️  admin_setup.html not found:", e)
         # preusmeri korisnika na WiFi setup stranu
         return "HTTP/1.0 302 Found\r\nLocation: /wifi\r\n\r\n"
+
+    wifi = cfg.get("wifi", {})
+    mqtt = cfg.get("mqtt", {})
+    device = cfg.get("device", {})
+    sampling = cfg.get("sampling", {})
+    external = cfg.get("external", {})
+    sc_cfg = external.get("sensor_community", {})
+    pengy_cfg = external.get("pengy_api", {})
+
+    # tekstualna polja
+    replacements = {
+        "{{wifi_ssid}}": wifi.get("ssid", ""),
+        "{{mqtt_host}}": mqtt.get("host", ""),
+        "{{mqtt_port}}": mqtt.get("port", ""),
+        "{{mqtt_base_topic}}": mqtt.get("base_topic", ""),
+        "{{device_name}}": device.get("name", ""),
+        "{{description}}": device.get("description", ""),
+        "{{lat}}": device.get("lat", ""),
+        "{{lon}}": device.get("lon", ""),
+        "{{alt}}": device.get("altitude", ""),
+        "{{ground_offset}}": device.get("ground_offset", ""),
+        "{{samples_per_min}}": sampling.get("samples_per_min", ""),
+        "{{agg_window}}": sampling.get("agg_window", ""),
+        "{{sc_sensor_id}}": sc_cfg.get("sensor_id", ""),
+        "{{sc_interval}}": sc_cfg.get("interval_seconds", ""),
+        "{{pengy_base_url}}": pengy_cfg.get("base_url", ""),
+        "{{pengy_api_key}}": pengy_cfg.get("api_key", ""),
+    }
+
+    for token, value in replacements.items():
+        html = html.replace(token, _html_escape(value))
+
+    # checkbox-ovi
+    html = html.replace(
+        "{{mqtt_retain_checked}}",
+        "checked" if mqtt.get("retain") else ""
+    )
+    html = html.replace(
+        "{{trim_checked}}",
+        "checked" if sampling.get("trim") else ""
+    )
+    html = html.replace(
+        "{{sc_enabled_checked}}",
+        "checked" if sc_cfg.get("enabled") else ""
+    )
+    html = html.replace(
+        "{{pengy_enabled_checked}}",
+        "checked" if pengy_cfg.get("enabled") else ""
+    )
+
+    return "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n" + html
 
 PIN_FORM_HTML = """HTTP/1.0 200 OK
 Content-Type: text/html
@@ -234,7 +318,7 @@ def run_setup_mode(timeout_seconds=180):
                 if "admin_pin" in form and "wifi_ssid" not in form:
                     if form["admin_pin"] == admin_pin:
                         # prikaži full form
-                        client.send(admin_html().encode())
+                        client.send(admin_html(cfg).encode())
                     else:
                         client.send(PIN_FORM_HTML.encode())
                     client.close()
@@ -266,7 +350,8 @@ def run_setup_mode(timeout_seconds=180):
                     cfg["device"]["lat"] = float(form.get("lat", cfg["device"].get("lat", 0)))
                     cfg["device"]["lon"] = float(form.get("lon", cfg["device"].get("lon", 0)))
                     cfg["device"]["altitude"] = float(form.get("alt", cfg["device"].get("altitude", 0)))
-                    cfg["device"]["description"] = float(form.get("description", cfg["device"].get("description", "")))
+                    cfg["device"]["description"] = form.get("description", cfg["device"].get("description", ""))
+                    cfg["device"]["ground_offset"] = float(form.get("ground_offset", cfg["device"].get("ground_offset", 0)))
                 except:
                     pass
 
@@ -294,6 +379,20 @@ def run_setup_mode(timeout_seconds=180):
                 pengy_cfg["base_url"] = form.get("pengy_base_url", pengy_cfg.get("base_url", ""))
                 pengy_cfg["api_key"] = form.get("pengy_api_key", pengy_cfg.get("api_key", ""))
                 cfg["external"]["pengy_api"] = pengy_cfg
+                
+                # OTA
+                ota_cfg = cfg.get("ota", {})
+                ota_cfg["channel"] = form.get("ota_channel", ota_cfg.get("channel", "latest"))
+                ota_cfg["latest_manifest_url"] = form.get(
+                    "ota_latest_manifest_url",
+                    ota_cfg.get("latest_manifest_url", "")
+                )
+                ota_cfg["beta_manifest_url"] = form.get(
+                    "ota_beta_manifest_url",
+                    ota_cfg.get("beta_manifest_url", "")
+                )
+                # manifest_url
+                cfg["ota"] = ota_cfg
 
                 save_config(cfg)
                 client.send(b"HTTP/1.0 200 OK\r\n\r\nSaved. Rebooting...")

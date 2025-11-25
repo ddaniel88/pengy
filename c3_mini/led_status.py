@@ -32,11 +32,19 @@ AQI_COLORS = [
 _current = (0, 0, 0)     # šta trenutno svetli
 _stable_color = None     # šta da vratimo u restore (obično AQI)
 
+current_mode = "NORMAL"   # global
+_last_toggle_ms = 0
+_led_phase = False  # za naizmenične boje / on-off
+
 # Wi-Fi treptanje
 _WIFI_BLINK_PERIOD_MS = 1000
 _wifi_blink_enabled = False
 _wifi_last_toggle_ms = 0
 _wifi_on = False  # da li je trenutno upaljena crvena u blink modu
+
+# OTA treptanje
+_OTA_BLINK_PERIOD_MS = 200     # crveno / plavo brzo
+_OTA_ERROR_PERIOD_MS = 700     # crveno sporo on/off
 
 def _show(color):
     global _current
@@ -47,6 +55,10 @@ def _show(color):
     except Exception as ex:
         print("LED error:", ex)
 
+def set_mode(mode: str):
+    global current_mode
+    current_mode = mode
+    print("LED MODE =>", current_mode)
 
 def set_boot():
     global _stable_color
@@ -122,15 +134,42 @@ def set_wifi_fail_mode(enabled: bool = True):
 
 def tick():
     """
-    Pozivaj je u glavnoj petlji (na svakom ciklusu ili periodično).
-    Ako je Wi-Fi blink mod aktivan, brine o treptanju.
+    Poziva se u glavnoj petlji.
+    - Ako je OTA mod aktivan, radi OTA treperenje.
+    - Inače, ako je Wi-Fi blink aktivan, treperi crveno..
     """
-    global _wifi_last_toggle_ms, _wifi_on
+    global _wifi_last_toggle_ms, _wifi_on, _last_toggle_ms, _led_phase
+
+    now = time.ticks_ms()
+
+    # --- OTA modovi imaju prioritet nad svime ---
+
+    if current_mode == "OTA_IN_PROGRESS":
+        # policijsko crveno / plavo
+        if time.ticks_diff(now, _last_toggle_ms) >= _OTA_BLINK_PERIOD_MS:
+            _last_toggle_ms = now
+            _led_phase = not _led_phase
+            if _led_phase:
+                _show((X_BRIGHT, 0, 0))   # crveno
+            else:
+                _show((0, 0, X_BRIGHT))   # plavo
+        return
+
+    if current_mode == "OTA_ERROR":
+        # sporo crveno on/off
+        if time.ticks_diff(now, _last_toggle_ms) >= _OTA_ERROR_PERIOD_MS:
+            _last_toggle_ms = now
+            _led_phase = not _led_phase
+            if _led_phase:
+                _show((X_BRIGHT, 0, 0))   # crveno
+            else:
+                _show((0, 0, 0))          # ugašeno
+        return
+
+    # --- Wi-Fi blink ---
 
     if not _wifi_blink_enabled:
         return
-
-    now = time.ticks_ms()
     if time.ticks_diff(now, _wifi_last_toggle_ms) >= _WIFI_BLINK_PERIOD_MS:
         _wifi_last_toggle_ms = now
         _wifi_on = not _wifi_on

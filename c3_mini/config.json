@@ -3,6 +3,11 @@
         "ssid": "Dimitrov",
         "password": "qdimitrov123"
     },
+    "ota": {
+        "channel": "latest",
+        "latest_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json",
+        "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json"
+    },
     "mqtt": {
         "host": "test.mosquitto.org",
         "port": 1883,
@@ -16,12 +21,12 @@
         "lat": 43.32451475,
         "lon": 21.91667465,
         "altitude": 210,
+        "ground_offset": 20.0,
         "status": "active",
-        "version": "1.0.0",
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"]
     },
     "sampling": {
-        "samples_per_min": 5,
+        "samples_per_min": 10,
         "trim": true,
         "agg_window": 10
     },    

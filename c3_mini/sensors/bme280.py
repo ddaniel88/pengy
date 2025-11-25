@@ -1,8 +1,8 @@
-# sensor_bme280.py
+# sensors/bme280.py
 # BME280 / BMP280 senzor u stilu projekta
 from machine import I2C, Pin
 import time
-from sensor_base import BaseEnvSensor
+from sensors.base import BaseEnvSensor
 
 # isti I2C kao i za sen55 / sps30
 _i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)

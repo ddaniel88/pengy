@@ -1,71 +1,127 @@
 # maintenance_handler.py
+
 import machine
 import time
 import ujson
-import os
-import network
+
 
 class MaintenanceHandler:
+    """
+    Obrada "maintenance" komandi koje stižu preko MQTT-a.
+
+    Podržane komande (JSON poruka sa poljem "op"):
+
+    - {"op": "reboot"}
+    - {"op": "force_measure"}
+    - {"op": "ota"}  # može i sa dodatnim poljima, npr {"op": "ota", "version": "latest"}
+
+    OTA se ne izvršava ovde direktno, već se samo podiže zastavica
+    (self.ota_requested == True), a main petlja odlučuje kada će da pozove
+    run_ota_update().
+    """
+
     def __init__(self, mqtt_client, config, sensor_manager, base_topic, uid):
-        self.mqtt = mqtt_client
+        self.mqtt = mqtt_client          # raw MQTTClient instanca (umqtt.simple.MQTTClient)
         self.config = config
         self.sensor_manager = sensor_manager
         self.base_topic = base_topic
         self.uid = uid
 
+        # OTA stanje
+        self.ota_requested = False
+        self._ota_payload = None  # ovde možemo da čuvamo npr. {"version": "..."} ako zatreba
+
+    # --------------------------------------------------------------------- helpers
+
+    def _safe_publish(self, topic_str, payload_obj):
+        """
+        Pojednostavljena publish logika samo za maintenance poruke.
+        Ne koristi offline buffer, ovo su "best effort" komande / odgovori.
+        """
+        if not self.mqtt:
+            print("MQTT client is None, cannot publish.")
+            return
+
+        try:
+            topic = topic_str.encode()
+            payload = ujson.dumps(payload_obj)
+            self.mqtt.publish(topic, payload)
+            print("Published maintenance message to", topic_str)
+        except Exception as exc:
+            print("Failed to publish maintenance message:", exc)
+
+    # --------------------------------------------------------------------- public API
+
     def handle_command(self, topic, msg):
+        """
+        MQTT callback:
+        - topic: bytes
+        - msg: bytes (JSON sa "op")
+        """
         try:
             data = ujson.loads(msg)
-            op = data.get("op")
-            print("🔧 Command:", op)
+        except Exception as exc:
+            print("❌ Error decoding command JSON:", exc, "raw msg:", msg)
+            return
 
-            if op == "reboot":
-                print("🔄 Rebooting...")
-                time.sleep(1)
-                machine.reset()
+        op = data.get("op")
+        print("🔧 Command:", op)
 
-            elif op == "force_measure":
-                print("📡 Force measure requested")
-                measurement = self.sensor_manager.measure_minute_all()
-                payload = {
-                    "device": self.uid,
-                    "ts": time.time(),
-                    "data": measurement
-                }
-                topic = f"{self.base_topic}/{self.uid}/minute".encode()
-                self.mqtt.publish(topic, ujson.dumps(payload))
+        if op == "reboot":
+            self._handle_reboot()
 
-            elif op == "pull_update":
-                # očekujemo da dođe i "target": "main" | "sensor_community" | "pulse_eco"
-                # i "url": "http://...."
-                target = data.get("target")
-                url = data.get("url")
-                print("⬇️ OTA requested for", target, "from", url)
-                # ovde ćeš ti kasnije uraditi HTTP GET i snimiti u update_*.py
+        elif op == "force_measure":
+            self._handle_force_measure()
 
-            elif op == "wifi_reset":
-                print("📶 Reset WiFi config")
-                if "config.json" in os.listdir():
-                    os.remove("config.json")
-                sta = network.WLAN(network.STA_IF)
-                sta.active(False)
-                machine.reset()
+        elif op == "ota":
+            self._handle_ota(data)
 
-            elif op == "enter_setup":
-                # napravi flag da main zna da ide u setup mod
-                try:
-                    with open("enter_setup.flag", "w") as f:
-                        f.write("1")
-                    print("enter_setup.flag created")
-                except Exception as exc:
-                    print("cannot create enter_setup.flag:", exc)
+        else:
+            print("⚠️ Unknown command op:", op)
 
-                # mali delay pa reset
-                time.sleep(0.5)
-                machine.reset()
+    def consume_ota_request(self):
+        """
+        Main petlja može periodično da pita:
+            requested, payload = maintenance.consume_ota_request()
+        Ako je requested == True, payload je originalni JSON (dict) komande.
+        Zastavica se resetuje (one-shot).
+        """
+        if self.ota_requested:
+            self.ota_requested = False
+            return True, (self._ota_payload or {})
+        return False, None
 
-            else:
-                print("⚠️ Unknown command:", op)
+    # --------------------------------------------------------------------- op handlers
 
-        except Exception as e:
-            print("❌ Error processing command:", e)
+    def _handle_reboot(self):
+        print("🔄 Rebooting on request...")
+        # kratki delay da poruka stigne do logova
+        time.sleep(1)
+        machine.reset()
+
+    def _handle_force_measure(self):
+        print("📡 Force measure requested")
+        try:
+            measurement = self.sensor_manager.measure_minute_all()
+        except Exception as exc:
+            print("Force measure failed:", exc)
+            return
+
+        if not measurement:
+            print("Force measure returned empty measurement.")
+            measurement = {}
+
+        payload = {
+            "device": self.uid,
+            "ts": time.time(),
+            "data": measurement,
+        }
+
+        topic_str = f"{self.base_topic}/{self.uid}/minute"
+        self._safe_publish(topic_str, payload)
+
+    def _handle_ota(self, data):
+        # ovde kasnije možemo da čitamo npr. data.get("version"), data.get("url"), itd.
+        print("🚀 OTA requested via MQTT")
+        self.ota_requested = True
+        self._ota_payload = data

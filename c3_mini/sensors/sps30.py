@@ -1,9 +1,9 @@
-# sensor_sps30.py
+# sensors/sps30.py
 # SPS30
 import time
 import struct
 from machine import Pin, I2C
-from sensor_base import BaseEnvSensor
+from sensors.base import BaseEnvSensor
 
 I2C_ADDR = 0x69
 
