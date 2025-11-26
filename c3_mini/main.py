@@ -11,10 +11,8 @@ import aqi_utils
 import gc
 
 from net import mqtt_client
-from sensors.sen55 import Sen55Sensor
-from sensors.sps30 import Sps30Sensor
-from sensors.bme280 import Bme280Sensor
 from sensors.manager import SensorManager
+from sensors.factory import create_sensors
 import setup
 import offline_buffer
 from uploader.external_manager import ExternalManager
@@ -293,11 +291,9 @@ def main():
     base_topic = config.get("mqtt", {}).get("base_topic", "pengy/rs/nis")
     uid = device_meta.get("uid", "unknown")
     
-    # senzori
-    sen55 = Sen55Sensor()
-    sps30 = Sps30Sensor()
-    bme280 = Bme280Sensor()
-    sensor_manager = SensorManager([sps30, bme280])
+    # senzori – generički, na osnovu config-a
+    sensors = create_sensors(device_meta)
+    sensor_manager = SensorManager(sensors)
 
     # MQTT
     mqtt_client_instance = mqtt_client.connect_mqtt(config)

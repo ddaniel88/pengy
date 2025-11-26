@@ -23,7 +23,8 @@
         "altitude": 210,
         "ground_offset": 20.0,
         "status": "active",
-        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"]
+        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"],
+		"sensors": ["sen55"]
     },
     "sampling": {
         "samples_per_min": 10,
