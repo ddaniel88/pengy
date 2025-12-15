@@ -1,127 +1,130 @@
 # maintenance_handler.py
-
+import ujson
+import gc
 import machine
 import time
-import ujson
 
 
 class MaintenanceHandler:
     """
-    Obrada "maintenance" komandi koje stižu preko MQTT-a.
+    Obrada maintenance komandi pristiglih preko MQTT-a.
 
-    Podržane komande (JSON poruka sa poljem "op"):
+    Očekuje JSON payload oblika:
+    {
+        "op": "ota" | "reboot" | "ping" | ...,
+        "token": "...",       # za OTA komandu (obavezno ako postoji security.ota_token)
+        ... ostala polja ...
+    }
 
-    - {"op": "reboot"}
-    - {"op": "force_measure"}
-    - {"op": "ota"}  # može i sa dodatnim poljima, npr {"op": "ota", "version": "latest"}
-
-    OTA se ne izvršava ovde direktno, već se samo podiže zastavica
-    (self.ota_requested == True), a main petlja odlučuje kada će da pozove
-    run_ota_update().
+    OTA logika:
+    - Poštuje:
+        security.ota_enabled (bool, default True)
+        security.ota_token (string ili None)
+      secure_ota (TLS) je već proverio main() preko require_secure_ota + tls.
     """
 
     def __init__(self, mqtt_client, config, sensor_manager, base_topic, uid):
-        self.mqtt = mqtt_client          # raw MQTTClient instanca (umqtt.simple.MQTTClient)
+        self.mqtt_client = mqtt_client
         self.config = config
         self.sensor_manager = sensor_manager
         self.base_topic = base_topic
         self.uid = uid
 
-        # OTA stanje
+        # OTA state
         self.ota_requested = False
-        self._ota_payload = None  # ovde možemo da čuvamo npr. {"version": "..."} ako zatreba
+        self._ota_payload = None
 
-    # --------------------------------------------------------------------- helpers
-
-    def _safe_publish(self, topic_str, payload_obj):
-        """
-        Pojednostavljena publish logika samo za maintenance poruke.
-        Ne koristi offline buffer, ovo su "best effort" komande / odgovori.
-        """
-        if not self.mqtt:
-            print("MQTT client is None, cannot publish.")
-            return
-
-        try:
-            topic = topic_str.encode()
-            payload = ujson.dumps(payload_obj)
-            self.mqtt.publish(topic, payload)
-            print("Published maintenance message to", topic_str)
-        except Exception as exc:
-            print("Failed to publish maintenance message:", exc)
-
-    # --------------------------------------------------------------------- public API
+    # ----------------------------------------------------------------------
+    # PUBLIC API
+    # ----------------------------------------------------------------------
 
     def handle_command(self, topic, msg):
         """
-        MQTT callback:
-        - topic: bytes
-        - msg: bytes (JSON sa "op")
+        MQTT callback. Topic je bytes, msg je bytes.
         """
         try:
-            data = ujson.loads(msg)
+            try:
+                payload_str = msg.decode("utf-8")
+            except Exception:
+                payload_str = msg.decode("utf-8", "ignore")
+
+            gc.collect()
+
+            data = ujson.loads(payload_str)
         except Exception as exc:
-            print("❌ Error decoding command JSON:", exc, "raw msg:", msg)
+            print("[Maintenance] Invalid JSON in command:", exc)
             return
 
         op = data.get("op")
-        print("🔧 Command:", op)
+        if not op:
+            print("[Maintenance] Command without 'op' field, ignoring.")
+            return
 
-        if op == "reboot":
-            self._handle_reboot()
+        op = str(op).lower()
+        print("[Maintenance] CMD op =", op, "data =", data)
 
-        elif op == "force_measure":
-            self._handle_force_measure()
-
-        elif op == "ota":
+        if op == "ota":
             self._handle_ota(data)
-
+        elif op == "reboot":
+            self._handle_reboot()
+        elif op == "ping":
+            self._handle_ping()
         else:
-            print("⚠️ Unknown command op:", op)
+            print("[Maintenance] Unknown op:", op)
 
     def consume_ota_request(self):
         """
-        Main petlja može periodično da pita:
-            requested, payload = maintenance.consume_ota_request()
-        Ako je requested == True, payload je originalni JSON (dict) komande.
-        Zastavica se resetuje (one-shot).
+        Glavni loop zove ovo da vidi da li je OTA tražen.
+        Vraća: (requested: bool, ota_payload: dict|None)
+        Ako requested == True, handler resetuje svoj interni flag.
         """
-        if self.ota_requested:
-            self.ota_requested = False
-            return True, (self._ota_payload or {})
-        return False, None
+        if not self.ota_requested:
+            return False, None
 
-    # --------------------------------------------------------------------- op handlers
+        payload = self._ota_payload
+        self.ota_requested = False
+        self._ota_payload = None
+        return True, payload
 
-    def _handle_reboot(self):
-        print("🔄 Rebooting on request...")
-        # kratki delay da poruka stigne do logova
-        time.sleep(1)
-        machine.reset()
-
-    def _handle_force_measure(self):
-        print("📡 Force measure requested")
-        try:
-            measurement = self.sensor_manager.measure_minute_all()
-        except Exception as exc:
-            print("Force measure failed:", exc)
-            return
-
-        if not measurement:
-            print("Force measure returned empty measurement.")
-            measurement = {}
-
-        payload = {
-            "device": self.uid,
-            "ts": time.time(),
-            "data": measurement,
-        }
-
-        topic_str = f"{self.base_topic}/{self.uid}/minute"
-        self._safe_publish(topic_str, payload)
+    # ----------------------------------------------------------------------
+    # INTERNAL HANDLERS
+    # ----------------------------------------------------------------------
 
     def _handle_ota(self, data):
-        # ovde kasnije možemo da čitamo npr. data.get("version"), data.get("url"), itd.
-        print("🚀 OTA requested via MQTT")
+        """
+        OTA komanda – poštuje security flagove iz config-a:
+        security.ota_enabled (default True)
+        security.ota_token (ako postoji, komanda mora da ima isti 'token')
+
+        require_secure_ota je već ispoštovan u main.py preko izbora MQTT endpointa
+        (init_mqtt_clients).
+        """
+        security_cfg = self.config.get("security", {})
+
+        ota_enabled = security_cfg.get("ota_enabled", True)
+        if not ota_enabled:
+            print("[OTA] Ignoring OTA – security.ota_enabled = False")
+            return
+
+        expected_token = security_cfg.get("ota_token", None)
+        if expected_token:
+            msg_token = data.get("token")
+            if not msg_token or str(msg_token) != str(expected_token):
+                print("[OTA] Token mismatch or missing. Ignoring OTA.")
+                return
+
+        print("🚀 [OTA] OTA requested via MQTT (security checks passed)")
         self.ota_requested = True
         self._ota_payload = data
+
+    def _handle_reboot(self):
+        print("[Maintenance] Reboot requested – rebooting device.")
+        time.sleep(0.5)
+        machine.reset()
+
+    def _handle_ping(self):
+        """
+        Jednostavna 'ping' komanda – za sada samo ispiše log.
+        Po želji kasnije možeš da dodaš odgovor preko MQTT-a.
+        """
+        print("[Maintenance] Ping received.")

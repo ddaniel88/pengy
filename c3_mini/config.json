@@ -8,12 +8,26 @@
         "latest_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/latest/manifest.json",
         "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json"
     },
-    "mqtt": {
-        "host": "test.mosquitto.org",
-        "port": 1883,
+    "mqtt_primary": {
+		"enabled": false,
+        "host": "3475845782674f5d8df5a2eba099bcc5.s1.eu.hivemq.cloud",
+        "port": 8883,
+		"username": "pengy.iot",
+		"password": "0FcThqHjZtpOkLmrYpPM",
+		"tls": true,
         "base_topic": "pengy/rs/nis",
-        "retain": true
+        "retain": true,
+		"allow_ota_commands": true
     },
+	"mqtt_secondary": {
+		"enabled": true,
+		"host": "test.mosquitto.org",
+		"port": 1883,
+		"tls": false,
+		"base_topic": "pengy/rs/nis",
+		"retain": false,
+		"allow_ota_commands": true
+	},
     "device": {
         "uid": "pengy-wifi-0e0408e8",
         "name": "Green Oasis",
@@ -46,6 +60,9 @@
         }
     },
     "security": {
-        "admin_pin": "1234"
+        "admin_pin": "1234",
+		"ota_enabled": true,
+		"require_secure_ota": false,
+		"ota_token": "VKTqVxoy7ddKpOXToagSUfG0MRoSp4akhKIbsEMZLepXc0qm87Z2iIG891HldRzA"
     }
 }
