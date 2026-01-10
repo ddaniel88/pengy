@@ -2,12 +2,9 @@
 # SPS30
 import time
 import struct
-from machine import Pin, I2C
 from sensors.base import BaseEnvSensor
 
 I2C_ADDR = 0x69
-
-i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 
 
 def _crc8(two_bytes: bytes) -> int:
@@ -33,7 +30,8 @@ class Sps30Sensor(BaseEnvSensor):
     Ostale (number concentration...) za sada ignorišemo.
     """
 
-    def __init__(self):
+    def __init__(self, i2c):
+        self.i2c = i2c
         self._started = False
 
     def get_supported_fields(self):
@@ -45,13 +43,13 @@ class Sps30Sensor(BaseEnvSensor):
         payload = b"\x03\x00"
         c = _crc8(payload)
         packet = b"\x00\x10" + payload + bytes([c])
-        i2c.writeto(I2C_ADDR, packet)
+        self.i2c.writeto(I2C_ADDR, packet)
         self._started = True
 
     def _read_raw_frame(self):
         # set pointer na 0x0300 pa čitanje 60 bajtova
-        i2c.writeto(I2C_ADDR, b"\x03\x00")
-        data = i2c.readfrom(I2C_ADDR, 60)
+        self.i2c.writeto(I2C_ADDR, b"\x03\x00")
+        data = self.i2c.readfrom(I2C_ADDR, 60)
         return data
 
     def _parse_10_floats(self, data: bytes):

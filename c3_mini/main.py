@@ -30,6 +30,14 @@ FIRMWARE_VERSION = "2025-11-21_02"
 CONFIG_FILE = "config.json"
 UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
+NTP_SERVERS = [
+    "time.google.com",
+    "time.cloudflare.com",
+    "pool.ntp.org",
+    "0.rs.pool.ntp.org",
+    "1.rs.pool.ntp.org"
+]
+
 # RAM buffer for minute-level fallback
 MINUTE_RAM_LIMIT = 30
 minute_ram_buffer = []
@@ -38,6 +46,7 @@ minute_ram_buffer = []
 config = None
 device_meta = {}
 sensor_manager = None
+last_ntp_sync_ts = 0
 
 
 # ---------------------------------------------------------------------------
@@ -51,19 +60,107 @@ def load_config():
     except Exception:
         return None
 
+def wait_for_network_ready(timeout_seconds: int = 30) -> bool:
+    """
+    Čeka da:
+    - STA connected
+    - ifconfig ima IP/GW/DNS != 0.0.0.0
+    - DNS resolve radi (getaddrinfo)
+    """
+    import network, socket, time
 
-def sync_time_utc():
+    sta = network.WLAN(network.STA_IF)
+    start = time.ticks_ms()
+
+    while time.ticks_diff(time.ticks_ms(), start) < timeout_seconds * 1000:
+        if not sta.isconnected():
+            time.sleep_ms(300)
+            continue
+
+        ip, mask, gw, dns = sta.ifconfig()
+        if ip != "0.0.0.0" and gw != "0.0.0.0" and dns != "0.0.0.0":
+            try:
+                #socket.getaddrinfo("test.mosquitto.org", 1883)
+                socket.getaddrinfo("time.google.com", 123)
+                return True
+            except OSError:
+                pass
+
+        time.sleep_ms(400)
+
+    return False
+
+def disable_wifi_powersave(sta):
+    # Različiti MicroPython build-ovi imaju različite API-je.
+    # Cilj: ne rušiti program, a isključiti PS gde može.
     try:
-        ntptime.host = "pool.ntp.org"
+        # Neki portovi koriste keyword pm
+        sta.config(pm=0)
+        print("[WiFi] Power-save OFF (pm=0)")
+        return True
+    except Exception as e1:
+        try:
+            # Neki koriste powersave flag
+            sta.config(powersave=False)
+            print("[WiFi] Power-save OFF (powersave=False)")
+            return True
+        except Exception as e2:
+            print("[WiFi] Power-save setting unsupported:", e1, "|", e2)
+            return False
+
+
+def _time_is_set() -> bool:
+    # na MicroPython-u, ako NTP nije setovan, time.time() je obično mali (od 2000 epoch)
+    # koristi se UNIX_EPOCH_OFFSET pa je ok da se proveri samo raw time.time()
+    return time.time() > 100000
+
+def sync_time_utc_once(host: str) -> bool:
+    import socket
+    try:
+        socket.setdefaulttimeout(5)
+    except AttributeError:
+        pass
+
+    ntptime.host = host
+    try:
         ntptime.settime()
-        print("NTP synced.")
+        print("[NTP] synced via", host)
+        return True
     except Exception as exc:
-        print("NTP sync failed:", exc)
+        print("[NTP] failed via", host, ":", exc)
+        return False
+
+def ensure_time_synced(min_interval_s: int = 3600, force: bool = False) -> bool:
+    """
+    Pozovi pre publish-a / pre SC upload-a.
+    - ne blokira boot
+    - ne zove NTP prečesto
+    """
+    global last_ntp_sync_ts
+
+    now = time.time()
+    if not force and last_ntp_sync_ts and (now - last_ntp_sync_ts) < min_interval_s:
+        return _time_is_set()
+
+    if not force and _time_is_set():
+        # vreme je već setovano, samo osvežavaj po intervalu
+        last_ntp_sync_ts = now
+        return True
+
+    hosts = NTP_SERVERS
+    for h in hosts:
+        if sync_time_utc_once(h):
+            last_ntp_sync_ts = time.time()
+            return True
+
+    return False
 
 
-def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20) -> bool:
+def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20):
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
+
+    disable_wifi_powersave(sta)
 
     try:
         sta.disconnect()
@@ -75,14 +172,54 @@ def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20) -> bool:
             sta.connect(ssid, password)
         except Exception as exc:
             print("WiFi connect error:", exc)
-            return False
+            return sta, False
 
         start = time.time()
         while not sta.isconnected() and (time.time() - start) < timeout_seconds:
             time.sleep(1)
 
-    return sta.isconnected()
+    return sta, sta.isconnected()
 
+
+def ensure_wifi_connected(wifi_cfg, sta) -> bool:
+    """
+    Non-blocking runtime WiFi reconnect:
+    - samo jedan pokušaj, bez sleep/backoff spirale
+    """
+    ssid = wifi_cfg.get("ssid")
+    password = wifi_cfg.get("password")
+
+    if not ssid:
+        return False
+
+    if sta.isconnected():
+        return True
+
+    print("[WiFi] Disconnected → reconnecting (kick)...")
+
+    try:
+        sta.disconnect()
+    except:
+        pass
+
+    try:
+        sta.connect(ssid, password)
+    except Exception as exc:
+        print("[WiFi] connect error:", exc)
+        return False
+
+    # kratko čekanje da uhvati link
+    start = time.time()
+    while not sta.isconnected() and (time.time() - start) < 8:
+        time.sleep_ms(250)
+
+    ok = sta.isconnected()
+    print("[WiFi] Reconnect:", "OK" if ok else "FAIL")
+
+    if ok:
+        wait_for_network_ready(timeout_seconds=10)
+
+    return ok
 
 # ---------------------------------------------------------------------------
 # STATUS HTTP SERVER
@@ -173,7 +310,7 @@ def flush_minute_ram(mqtt_client_instance, cfg):
 
     still = []
     for topic, payload in minute_ram_buffer:
-        mqtt_client_instance, ok, net_err = mqtt_client.publish(
+        mqtt_client_instance, ok, net_err, _ = mqtt_client.publish(
             mqtt_client_instance,
             {"mqtt": cfg},
             topic.encode(),
@@ -194,106 +331,162 @@ def flush_minute_ram(mqtt_client_instance, cfg):
 
 def init_mqtt_clients(config, sensor_manager, uid):
     """
-    Kreira primary i secondary MQTT klijente na osnovu configa.
-    Vraća:
-        mqtt_clients = [("primary", client, cfg), ("secondary", client, cfg)]
-        ota_client = klijent koji sme da prihvati OTA (ili None)
-        maintenance = MaintenanceHandler ili None
+    Connect-on-demand:
+    - ne konektujemo MQTT na boot-u
+    - samo pripremimo config + runtime state
     """
-
     mqtt_clients = []
 
-    # --- PRIMARY ---
-    primary_client, primary_cfg = mqtt_client.connect_named(config, "mqtt_primary")
-    if primary_client:
-        mqtt_clients.append(("primary", primary_client, primary_cfg))
+    def add_section(name):
+        cfg = config.get(name, {})
+        if not cfg.get("enabled", False):
+            print(name, "disabled.")
+            return
+        mqtt_clients.append({
+            "name": name,
+            "cfg": cfg,
+            "client": None,
+            "next_retry_ts": 0,
+            "cooldown_s": 15,
+        })
 
-    # --- SECONDARY ---
-    secondary_client, secondary_cfg = mqtt_client.connect_named(config, "mqtt_secondary")
-    if secondary_client:
-        mqtt_clients.append(("secondary", secondary_client, secondary_cfg))
+    add_section("mqtt_primary")
+    add_section("mqtt_secondary")
 
-    # ----------------------------------------------------------------------
-    # Flush offline buffer for each MQTT client
-    # ----------------------------------------------------------------------
-    for name, client, cfg in mqtt_clients:
-        print("[MQTT] Flushing offline buffer for:", name)
-        offline_buffer.flush_buffer(client, {"mqtt": cfg}, mqtt_client.publish)
-
-    # ----------------------------------------------------------------------
-    # Determine OTA handler MQTT client
-    # ----------------------------------------------------------------------
-    ota_client = None
-    maintenance = None
-
+    # OTA broker selection (bez konekcije)
+    ota_slot = None
     sec_opts = config.get("security", {})
     require_secure_ota = sec_opts.get("require_secure_ota", False)
 
-    for name, client, cfg in mqtt_clients:
-        allow = cfg.get("allow_ota_commands", False)
-        tls_enabled = cfg.get("tls", False)
-
-        if not allow:
+    for entry in mqtt_clients:
+        cfg = entry["cfg"]
+        if not cfg.get("allow_ota_commands", False):
+            continue
+        if require_secure_ota and not cfg.get("tls", False):
+            print("[OTA] Ignoring", entry["name"], "because secure OTA required.")
             continue
 
-        # If OTA must be secure → broker must have TLS
-        if require_secure_ota and not tls_enabled:
-            print("[OTA] Ignoring", name, "because secure OTA required.")
-            continue
+        base_topic = cfg.get("base_topic", "pengy/rs/nis")
+        cmd_topic = "{}/{}/cmd/#".format(base_topic, uid)
 
-        print("[OTA] Using", name, "for OTA commands.")
+        ota_slot = {
+            "name": entry["name"],
+            "cfg": cfg,
+            "client": None,
+            "subscribed": False,
+            "maintenance": None,
+            "cmd_topic": cmd_topic,
+            "next_retry_ts": 0,
+            "cooldown_s": 30,   # OTA reconnect cadence
+        }
 
-        ota_client = client
-        maintenance = MaintenanceHandler(
-            client,
-            config,
-            sensor_manager,
-            cfg.get("base_topic", "pengy/rs/nis"),
-            uid
-        )
+        print("[OTA] Will use", entry["name"], "for OTA commands.")
+        break
 
-        cmd_topic = "{}/{}/cmd/#".format(cfg["base_topic"], uid)
-        mqtt_client.setup_downlink(client, cmd_topic, maintenance.handle_command)
-
-        break  # use only one OTA-enabled MQTT broker
-
-    return mqtt_clients, ota_client, maintenance
+    return mqtt_clients, ota_slot
 
 
 # ---------------------------------------------------------------------------
 # MQTT PUBLISH HELPERS
 # ---------------------------------------------------------------------------
 
-def publish_to_all(mqtt_clients, uid, payload_dict, msg_type):
-    """
-    Publikuje na sve MQTT klijente u listi mqtt_clients.
-    payload_dict: Python dict → biće konvertovan u JSON.
-    msg_type: "minute" ili "agg"
-    """
-
+def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type):
     payload = ujson.dumps(payload_dict)
 
-    for name, client, cfg in mqtt_clients:
+    for entry in mqtt_clients:
+        cfg = entry["cfg"]
         topic = "{}/{}/{}".format(cfg["base_topic"], uid, msg_type)
 
-        client, ok, net_err = mqtt_client.publish(
-            client,
-            {"mqtt": cfg},
-            topic.encode(),
+        client, ok, net_err, did_reconnect = _mqtt_publish_entry(
+            entry,
+            uid,
+            topic,
             payload,
             retain=cfg.get("retain", False),
-            message_type=msg_type,
+            msg_type=msg_type,
+            from_flush=False
         )
 
         if not ok and net_err:
-            print("[MQTT] Failed on", name, "err:", net_err)
+            print("[MQTT] Failed on", entry["name"], "net err")
+            if msg_type == "minute":
+                add_minute_to_ram(topic, payload)
+
+        # ako je ovo OTA broker, posle reconnect-a obavezno resubscribe
+        if ota_slot and entry["name"] == ota_slot["name"]:
+            ota_slot["client"] = client
+            if did_reconnect:
+                ota_slot["subscribed"] = False
+            _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+
+
+def _mqtt_publish_entry(entry, uid, topic, payload, retain, msg_type, from_flush=False):
+    """
+    entry: dict {cfg, client, next_retry_ts, cooldown_s}
+    Vraca updated client i ok flag.
+    """
+    sta = network.WLAN(network.STA_IF)
+    if not sta.isconnected():
+        return entry["client"], False, False, False
+    
+    now = time.time()
+
+    if entry["next_retry_ts"] and now < entry["next_retry_ts"]:
+        return entry["client"], False, False, False
+
+    client, ok, net_err, did_reconnect = mqtt_client.publish(
+        entry["client"],
+        {"mqtt": entry["cfg"]},
+        topic.encode(),
+        payload,
+        retain=retain,
+        message_type=msg_type,
+        from_flush=from_flush
+    )
+
+    entry["client"] = client
+
+    if net_err:
+        entry["next_retry_ts"] = now + entry.get("cooldown_s", 15)
+    else:
+        entry["next_retry_ts"] = 0
+
+    return client, ok, net_err, did_reconnect
+
+
+def _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid):
+    """
+    Posle reconnect-a ili prvog connect-a:
+    - napravi MaintenanceHandler ako treba
+    - subscribe na cmd topic
+    """
+    if not ota_slot or not ota_slot.get("client"):
+        return
+
+    if ota_slot.get("maintenance") is None:
+        base_topic = ota_slot["cfg"].get("base_topic", "pengy/rs/nis")
+        ota_slot["maintenance"] = MaintenanceHandler(
+            ota_slot["client"],
+            config,
+            sensor_manager,
+            base_topic,
+            uid
+        )
+
+    if not ota_slot.get("subscribed"):
+        ok = mqtt_client.setup_downlink(
+            ota_slot["client"],
+            ota_slot["cmd_topic"],
+            ota_slot["maintenance"].handle_command
+        )
+        ota_slot["subscribed"] = bool(ok)
 
 
 # ---------------------------------------------------------------------------
 # MINUTE SAMPLING + AQI LED
 # ---------------------------------------------------------------------------
 
-def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid, mqtt_clients, config, external_mgr):
+def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid, mqtt_clients, config, external_mgr, now):
     """
     Radi jedan minut merenja (samples_per_min merenja).
     Vraća:
@@ -325,7 +518,7 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
         if key in measurement and measurement[key] is not None:
             normalized[key] = measurement[key]
 
-    now = time.time() + UNIX_EPOCH_OFFSET
+    ensure_time_synced(min_interval_s=3600, force=False)
 
     payload = {
         "device": uid,
@@ -407,13 +600,20 @@ def flush_all_buffers(mqtt_clients, config):
     """
     Flush file-based offline buffer + RAM minute buffer.
     """
-    for name, client, cfg in mqtt_clients:
+    for entry in mqtt_clients:
+        cfg = entry["cfg"]
+
+        # file buffer flush
+        client = entry["client"]
         client, _ = offline_buffer.flush_buffer(
             client,
             {"mqtt": cfg},
             mqtt_client.publish,
         )
-        client = flush_minute_ram(client, cfg)
+        entry["client"] = client
+
+        # RAM minute flush (ako ga koristiš)
+        entry["client"] = flush_minute_ram(entry["client"], cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +638,12 @@ def main():
     wifi_cfg = config.get("wifi", {})
     ssid = wifi_cfg.get("ssid")
     password = wifi_cfg.get("password")
-    wifi_ok = connect_wifi(ssid, password)
+
+    sta, wifi_ok = connect_wifi(ssid, password)
     print("WiFi:", "OK" if wifi_ok else "FAIL")
 
-    sync_time_utc()
+    if wifi_ok:
+        wait_for_network_ready(timeout_seconds=15)
 
     # Device meta
     device_meta = config.get("device", {})
@@ -452,9 +654,7 @@ def main():
     sensor_manager = SensorManager(sensors)
 
     # MQTT initialize
-    mqtt_clients, ota_client, maintenance = init_mqtt_clients(
-        config, sensor_manager, uid
-    )
+    mqtt_clients, ota_slot = init_mqtt_clients(config, sensor_manager, uid)
 
     # External uploader (sensor.community...)
     external_mgr = ExternalManager(config, device_meta)
@@ -476,14 +676,49 @@ def main():
     state = ota_state.load_state()
     if state.get("state") == ota_state.STATE_TRY_UPDATE:
         ota_state.mark_successful(FIRMWARE_VERSION)
+    
+    WIFI_COOLDOWN_S = 15
+    wifi_next_retry_ts = 0
 
-    sta = network.WLAN(network.STA_IF)
+    OTA_PROBE_S = 30
+    ota_next_probe_ts = 0
+    
+    wifi_fail_count = 0
 
     # -----------------------------------------------------------------------
     # MAIN LOOP
     # -----------------------------------------------------------------------
     while True:
-        now = time.time() + UNIX_EPOCH_OFFSET
+        # ---------------------------
+        # WiFi health check (every 10s)
+        # ---------------------------
+        now_raw = time.time()
+        
+        if not sta.isconnected():
+            if now_raw >= wifi_next_retry_ts:
+                ok = ensure_wifi_connected(wifi_cfg, sta)
+                if ok:
+                    wifi_fail_count = 0
+                else:
+                    wifi_fail_count += 1
+                wifi_next_retry_ts = now_raw + WIFI_COOLDOWN_S
+        else:
+            wifi_next_retry_ts = 0
+            wifi_fail_count = 0
+            
+        if wifi_fail_count >= 5:
+            print("[WiFi] Hard reset STA interface")
+            try:
+                sta.active(False)
+                time.sleep_ms(500)
+                sta.active(True)
+                disable_wifi_powersave(sta)
+                wifi_fail_count = 0
+                wifi_next_retry_ts = now_raw + 5
+            except Exception as exc:
+                print("[WiFi] Hard reset failed:", exc)
+        
+        now = now_raw + UNIX_EPOCH_OFFSET
 
         # WiFi LED status
         led_status.set_wifi_fail_mode(not sta.isconnected())
@@ -492,14 +727,37 @@ def main():
         # Handle HTTP status server
         handle_status_request(status_srv)
 
-        # MQTT downlink (only OTA broker)
-        if ota_client:
+        # --- OTA MQTT keepalive / probe ---
+        if ota_slot and not ota_slot.get("client"):
+            # probaj povremeno da se poveže (da OTA radi i kad nema publish-a)
+            if sta.isconnected() and now_raw >= ota_next_probe_ts:
+                ota_next_probe_ts = now_raw + OTA_PROBE_S
+                if now_raw >= ota_slot["next_retry_ts"]:
+                    print("[OTA] probe connect...")
+                    c = mqtt_client.connect_mqtt({"mqtt": ota_slot["cfg"]})
+                    if c:
+                        ota_slot["client"] = c
+                        ota_slot["subscribed"] = False
+                        ota_slot["next_retry_ts"] = 0
+                        _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+                    else:
+                        ota_slot["next_retry_ts"] = now_raw + ota_slot.get("cooldown_s", 30)
+
+        # MQTT downlink (OTA)
+        if ota_slot and ota_slot.get("client"):
             try:
-                ota_client.check_msg()
+                ota_slot["client"].check_msg()
             except:
-                pass
+                # ako pukne, pusti da publish/probe ponovo uspostavi
+                try:
+                    ota_slot["client"].disconnect()
+                except:
+                    pass
+                ota_slot["client"] = None
+                ota_slot["subscribed"] = False
 
         # OTA cycle
+        maintenance = ota_slot["maintenance"] if ota_slot else None
         handle_ota_cycle(maintenance, config)
 
         # ---------------------------
@@ -514,11 +772,12 @@ def main():
                 uid,
                 mqtt_clients,
                 config,
-                external_mgr
+                external_mgr,
+                now
             )
 
             # Publish minute to all MQTT brokers
-            publish_to_all(mqtt_clients, uid, payload, "minute")
+            publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute")
 
             print("Sent minute:", "PM2.5", pm25, "PM10", pm10)
 
@@ -533,7 +792,7 @@ def main():
                         "minutes": agg_window,
                         "data": agg["data"]
                     }
-                    publish_to_all(mqtt_clients, uid, agg_payload, "agg")
+                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg")
 
                 minute_measurements = []
 

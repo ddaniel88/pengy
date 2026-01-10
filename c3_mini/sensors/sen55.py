@@ -1,14 +1,8 @@
 # sensors/sen55.py
-from machine import Pin, I2C
 import time
 from sensors.base import BaseEnvSensor
 
 I2C_ADDR = 0x69
-
-# prilagodi pinove po svojoj pločici
-# (ovo je varijanta za Wemos / LOLIN C3 mini gde su SCL=5, SDA=4)
-i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
-
 
 # ----------------------------------------------------------------------
 # Low-level helpers
@@ -27,24 +21,33 @@ def _crc8(data: bytes) -> int:
     return crc
 
 
-def _send_cmd(cmd: int) -> None:
+def _send_cmd(i2c, cmd: int) -> None:
     """Pošalji 16-bit komandu senzoru."""
     i2c.writeto(I2C_ADDR, bytes([(cmd >> 8) & 0xFF, cmd & 0xFF]))
+    
+    
+def _read_status(i2c) -> int:
+    data = i2c.readfrom(I2C_ADDR, 3)
+    return (data[0] << 8) | data[1]
 
 
-def _start_measurement() -> None:
+def _read_values(i2c) -> bytes:
+    return i2c.readfrom(I2C_ADDR, 24)
+
+
+def _start_measurement(i2c) -> None:
     """Start Measurement (0x0021) – full mode (PM + RHT + VOC + NOx)."""
-    _send_cmd(0x0021)
+    _send_cmd(i2c, 0x0021)
 
 
-def _stop_measurement() -> None:
+def _stop_measurement(i2c) -> None:
     """Stop Measurement (0x0104)."""
-    _send_cmd(0x0104)
+    _send_cmd(i2c, 0x0104)
 
 
-def _data_ready() -> bool:
+def _data_ready(i2c) -> bool:
     """Read Data-Ready Flag (0x0202)."""
-    _send_cmd(0x0202)
+    _send_cmd(i2c, 0x0202)
     data = i2c.readfrom(I2C_ADDR, 3)
     if _crc8(data[0:2]) != data[2]:
         return False
@@ -52,12 +55,12 @@ def _data_ready() -> bool:
     return (data[1] & 0x01) == 1
 
 
-def _read_raw() -> bytes:
+def _read_raw(i2c) -> bytes:
     """
     Read Measured Values (0x03C4).
     Datasheet kaže: posle komande sačeka ~20ms pa čitaj 24 bajta.
     """
-    _send_cmd(0x03C4)
+    _send_cmd(i2c, 0x03C4)
     time.sleep_ms(20)
     return i2c.readfrom(I2C_ADDR, 24)
 
@@ -118,6 +121,7 @@ class Sen55Sensor(BaseEnvSensor):
 
     def __init__(
         self,
+        i2c,
         ready_retries: int = 3,
         temp_offset_c: float = 0.0,
         fallback_to_last: bool = True,
@@ -130,6 +134,7 @@ class Sen55Sensor(BaseEnvSensor):
         :param fallback_to_last: ako nema NIJEDNOG uzorka u ovom ciklusu,
                                  vrati poslednje dobro merenje umesto None.
         """
+        self.i2c = i2c
         self.ready_retries = ready_retries
         self.temp_offset_c = temp_offset_c
         self.fallback_to_last = fallback_to_last
@@ -166,7 +171,7 @@ class Sen55Sensor(BaseEnvSensor):
         - inače vrati None
         """
         try:
-            _start_measurement()
+            _start_measurement(self.i2c)
             # kratki warmup da se stabilizuje
             time.sleep(5)
         except OSError:
@@ -182,15 +187,15 @@ class Sen55Sensor(BaseEnvSensor):
                 # više pokušaja da sačekamo da data-ready bude 1
                 for _ in range(self.ready_retries):
                     try:
-                        if _data_ready():
-                            raw = _read_raw()
+                        if _data_ready(self.i2c):
+                            raw = _read_raw(self.i2c)
                             parsed = _parse_values(raw)
                             break
                     except OSError:
                         # verovatno reset / glitch na I2C-u
                         # pokušaj samo da ponovo startuješ merenje
                         try:
-                            _start_measurement()
+                            _start_measurement(self.i2c)
                         except Exception:
                             pass
                     # nije bilo spremno ili je bilo sitnog problema,
@@ -212,7 +217,7 @@ class Sen55Sensor(BaseEnvSensor):
         finally:
             # uvek pokušaj da zaustaviš merenje, čak i ako je nešto puklo
             try:
-                _stop_measurement()
+                _stop_measurement(self.i2c)
             except Exception:
                 pass
 

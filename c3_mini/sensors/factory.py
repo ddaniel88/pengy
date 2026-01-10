@@ -1,38 +1,95 @@
 # sensors/factory.py
+from machine import Pin, I2C
+from boards.selector import load_board_config
+
 from sensors.sen55 import Sen55Sensor
 from sensors.sps30 import Sps30Sensor
 from sensors.bme280 import Bme280Sensor
 
-# mapiranje string -> klasa
-SENSOR_REGISTRY = {
-    "sen55": Sen55Sensor,
-    "sps30": Sps30Sensor,
-    "bme280": Bme280Sensor,
-}
+
+def _as_list(val):
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    return [val]
 
 
 def create_sensors(device_cfg: dict) -> list:
     """
-    device_cfg – deo iz config.json, npr:
-      "device": {
-        "uid": "...",
-        "lat": ...,
-        "sensors": ["sen55", "bme280"]
-      }
-    """
-    enabled = device_cfg.get("sensors") or []
+    device_cfg – config['device'] iz config.json, npr:
+    {
+      "uid": "...",
+      "board": "c3_lolin",
+      "sensors": ["sen55", "bme280"]
+    }
 
-    # ako nije ništa zadato, podrazumevaj sve
-    if not enabled:
-        enabled = list(SENSOR_REGISTRY.keys())
+    Pravilo:
+    - ako device_cfg['sensors'] postoji -> instanciraj samo te senzore (scan samo za log)
+    - ako ne postoji -> autodetect po i2c.scan()
+    """
+    cfg = load_board_config(device_cfg)
+
+    i2c = I2C(
+        cfg.I2C_ID,
+        sda=Pin(cfg.I2C_SDA),
+        scl=Pin(cfg.I2C_SCL),
+        freq=getattr(cfg, "I2C_FREQ", 100_000),
+    )
+
+    # scan samo kao dijagnostika (i kao input za autodetect)
+    found = set()
+    try:
+        found = set(i2c.scan())
+        print("[I2C] found:", [hex(x) for x in sorted(found)])
+    except Exception as ex:
+        print("[I2C] scan failed:", ex)
+
+    enabled = _as_list(device_cfg.get("sensors"))
+    enabled = [s.strip().lower() for s in enabled if isinstance(s, str)]
 
     sensors = []
-    for name in enabled:
-        cls = SENSOR_REGISTRY.get(name)
-        if cls is not None:
+
+    # --- eksplicitno (po configu) ---
+    if enabled:
+        for name in enabled:
             try:
-                sensors.append(cls())
+                if name == "sen55":
+                    sensors.append(Sen55Sensor(i2c))
+                elif name == "sps30":
+                    sensors.append(Sps30Sensor(i2c))
+                elif name == "bme280":
+                    # opcioni override adrese:
+                    # device_cfg["bme280_address"] = 0x76 ili 0x77
+                    addr = device_cfg.get("bme280_address")
+                    sensors.append(Bme280Sensor(i2c, address=addr) if addr else Bme280Sensor(i2c))
+                else:
+                    print("Unknown sensor in config:", name)
             except Exception as ex:
                 print("Failed to init sensor", name, "->", ex)
+
+        return sensors
+
+    # --- autodetect (best effort) ---
+    # Napomena: SEN55 i SPS30 imaju 0x69 u fajlovima,
+    # scan ne može da ih razlikuje -> pokušamo oba, ko ne radi otpada.
+    try:
+        if 0x69 in found:
+            try:
+                sensors.append(Sen55Sensor(i2c))
+            except Exception as ex:
+                print("Failed to init sensor sen55 ->", ex)
+            try:
+                sensors.append(Sps30Sensor(i2c))
+            except Exception as ex:
+                print("Failed to init sensor sps30 ->", ex)
+
+        if 0x76 in found or 0x77 in found:
+            try:
+                sensors.append(Bme280Sensor(i2c))
+            except Exception as ex:
+                print("Failed to init sensor bme280 ->", ex)
+    except Exception as ex:
+        print("Autodetect failed ->", ex)
 
     return sensors

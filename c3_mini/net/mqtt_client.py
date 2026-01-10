@@ -3,70 +3,151 @@
 import machine
 import ubinascii
 import gc
-import ssl
+import time
+import socket
 from umqtt.simple import MQTTClient
 
 import offline_buffer
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+
+def _is_oserror(exc):
+    return isinstance(exc, OSError)
+
+def _errno(exc):
+    try:
+        if hasattr(exc, "args") and exc.args:
+            return exc.args[0]
+    except Exception:
+        pass
+    return None
+
+def _is_network_not_ready(exc):
+    # ESP32 often raises OSError(-202) while WiFi says "connected"
+    return _is_oserror(exc) and _errno(exc) == -202
+
+def _wifi_kick():
+    """
+    Non-blocking 'kick' for STA interface (helps after -202 / router restart).
+    """
+    try:
+        import network
+        sta = network.WLAN(network.STA_IF)
+        if sta.active():
+            try:
+                sta.disconnect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _dns_warmup(host, port, tries=3, max_backoff_ms=1500):
+    """
+    Rešava transient OSError(-202) na ESP32:
+    - čeka da DNS/routing zaista prorade
+    - koristi kratki backoff (ne blokira predugo)
+    """
+    backoff_ms = 250
+
+    for _ in range(tries):
+        try:
+            socket.getaddrinfo(host, port)
+            return True
+        except OSError as exc:
+            if _is_network_not_ready(exc):
+                _wifi_kick()
+            time.sleep_ms(backoff_ms)
+            backoff_ms = min(backoff_ms * 2, max_backoff_ms)
+        except Exception:
+            time.sleep_ms(backoff_ms)
+            backoff_ms = min(backoff_ms * 2, max_backoff_ms)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Connect
+
 def connect_mqtt(config):
     """
-    Prima config oblika: {"mqtt": {host, port, username, password, tls}}
+    Prima config oblika: {"mqtt": {host, port, username, password, tls, ...}}
     i konektuje jedan MQTT klijent.
+
+    Namerno kratko:
+      - mali broj pokušaja
+      - mali backoff
+      - nema dugačkog čekanja (main loop ostaje živ)
     """
 
     mqtt_config = config.get("mqtt", {})
-
     host = mqtt_config.get("host", "test.mosquitto.org")
-    port = mqtt_config.get("port", 1883)
+    port = int(mqtt_config.get("port", 1883))
 
     username = mqtt_config.get("username", None)
     password = mqtt_config.get("password", None)
-    use_tls = mqtt_config.get("tls", False)
+    use_tls = bool(mqtt_config.get("tls", False))
+
+    connect_retries = int(mqtt_config.get("connect_retries", 3))
+    backoff_ms = int(mqtt_config.get("connect_backoff_ms", 500))
+    sock_timeout = int(mqtt_config.get("socket_timeout", 5))
+
+    try:
+        socket.setdefaulttimeout(sock_timeout)
+    except AttributeError:
+        pass
 
     client_id = b"pengy_" + ubinascii.hexlify(machine.unique_id())
 
-    # string → bytes
     if isinstance(username, str):
         username = username.encode()
     if isinstance(password, str):
         password = password.encode()
 
-    # TLS params sa SNI (HiveMQ requires this)
-    ssl_params = {}
-    if use_tls:
-        try:
-            ssl_params = {"server_hostname": host}
-        except Exception as exc:
-            print("SSL param error:", exc)
-            ssl_params = {}
-
     print("MQTT connecting →", host, "port:", port, "TLS:", use_tls)
 
-    client = MQTTClient(
-        client_id=client_id,
-        server=host,
-        port=port,
-        user=username,
-        password=password,
-        ssl=use_tls,
-        ssl_params=ssl_params,
-    )
+    # DNS warmup (kratko)
+    _dns_warmup(host, port, tries=3)
 
-    try:
-        client.connect()
-        print("MQTT connected.")
-        return client
+    for attempt in range(1, connect_retries + 1):
+        client = MQTTClient(
+            client_id=client_id,
+            server=host,
+            port=port,
+            user=username,
+            password=password,
+            ssl=use_tls,
+            ssl_params={"server_hostname": host} if use_tls else {},
+        )
 
-    except Exception as exc:
-        print("MQTT connect failed:", type(exc), getattr(exc, "args", exc))
-        gc.collect()
-        return None
+        try:
+            client.connect()
+            print("MQTT connected.")
+            return client
+
+        except Exception as exc:
+            print("MQTT connect failed (attempt", attempt, "):", type(exc), getattr(exc, "args", exc))
+            if _is_network_not_ready(exc):
+                _wifi_kick()
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            gc.collect()
+            time.sleep_ms(backoff_ms)
+
+    return None
 
 
 def _is_network_error(exc):
+    # treat all OSError as network error in practice
     return isinstance(exc, OSError)
 
+
+# ---------------------------------------------------------------------------
+# Publish (connect on demand)
 
 def publish(
     client,
@@ -79,17 +160,21 @@ def publish(
     from_flush=False,
 ):
     """
-    Vrati (client, ok, was_network_error).
+    Returns (client, ok, was_network_error, did_reconnect).
 
-    Ako mreža padne → 3 puta će pokušati reconnect.
-    Ako nije minute poruka → upisuje u offline fajl (file-based).
+    - connect on demand (if client is None)
+    - on OSError -> drop client + let caller retry later
+    - buffer only non-minute when it was a network error
     """
 
     last_network_error = False
+    did_reconnect = False
 
-    for _ in range(3):
+    # keep this short; caller (main loop) controls cadence/cooldown
+    for _ in range(2):
         if not client:
             client = connect_mqtt(config)
+            did_reconnect = bool(client)
 
         if not client:
             last_network_error = True
@@ -97,67 +182,50 @@ def publish(
             try:
                 gc.collect()
                 client.publish(topic, message, retain=retain, qos=qos)
-                return client, True, False
+                return client, True, False, did_reconnect
 
             except Exception as exc:
                 print("MQTT publish failed:", exc)
 
                 if _is_network_error(exc):
                     last_network_error = True
+                    if _is_network_not_ready(exc):
+                        _wifi_kick()
                     try:
                         client.disconnect()
-                    except:
+                    except Exception:
                         pass
                     client = None
                 else:
-                    return client, False, False
+                    return client, False, False, did_reconnect
 
             finally:
                 gc.collect()
 
-    # posle 3 pokušaja – nije uspelo
     if (not from_flush) and last_network_error and message_type != "minute":
         try:
             offline_buffer.add_message(message_type, message)
         except Exception as exc:
             print("Failed to buffer MQTT message:", exc)
 
-    return client, False, last_network_error
+    return client, False, last_network_error, did_reconnect
 
+
+# ---------------------------------------------------------------------------
+# Downlink / subscribe
 
 def setup_downlink(client, topic: str, callback):
     """
-    Podešava subscribe i callback za downlink komande (OTA).
+    Subscribe + callback (call again after reconnect).
     """
     if not client:
-        print("Downlink setup skipped (no client).")
-        return
+        return False
 
     try:
         client.set_callback(callback)
         client.subscribe(topic)
         print("Subscribed for commands on", topic)
+        return True
     except Exception as exc:
         print("Downlink subscribe error:", exc)
-
-
-def connect_named(config, section_name):
-    """
-    Kreira MQTT klijent prema config[section_name].
-    Koristi privremeni config: {"mqtt": cfg}.
-    """
-    mqtt_cfg = config.get(section_name, {})
-
-    if not mqtt_cfg.get("enabled", False):
-        print(section_name, "disabled.")
-        return None, None
-
-    print("Connecting MQTT section:", section_name)
-
-    temp = {"mqtt": mqtt_cfg}
-    client = connect_mqtt(temp)
-
-    if not client:
-        print("MQTT connect failed for section:", section_name)
-
-    return client, mqtt_cfg
+        return False

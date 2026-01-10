@@ -102,7 +102,7 @@ def flush_buffer(mqtt_client, config, publish_fn):
             # ako jednog dana dodaš hourly itd.
             topic = "{}/{}/{}".format(base_topic, uid, msg_type)
 
-        mqtt_client, ok, _ = publish_fn(
+        mqtt_client, ok, _, _ = publish_fn(
             mqtt_client,
             config,
             topic.encode(),

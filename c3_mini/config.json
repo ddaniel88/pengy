@@ -15,6 +15,9 @@
 		"username": "pengy.iot",
 		"password": "0FcThqHjZtpOkLmrYpPM",
 		"tls": true,
+		"connect_retries": 5,
+        "connect_backoff_ms": 400,
+        "socket_timeout": 5,
         "base_topic": "pengy/rs/nis",
         "retain": true,
 		"allow_ota_commands": true
@@ -24,12 +27,16 @@
 		"host": "test.mosquitto.org",
 		"port": 1883,
 		"tls": false,
+		"connect_retries": 5,
+        "connect_backoff_ms": 400,
+        "socket_timeout": 5,
 		"base_topic": "pengy/rs/nis",
 		"retain": false,
 		"allow_ota_commands": true
 	},
     "device": {
-        "uid": "pengy-wifi-0e0408e8",
+		"board": "esp32s3_n16r8",
+        "uid": "pengy-wifi-kowalski-0000",
         "name": "Green Oasis",
         "description": "",
         "lat": 43.32451475,
@@ -38,7 +45,7 @@
         "ground_offset": 20.0,
         "status": "active",
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"],
-		"sensors": ["sen55"]
+		"sensors": ["sps30", "bme280"]
     },
     "sampling": {
         "samples_per_min": 10,
@@ -49,7 +56,7 @@
         "sensor_community": {
             "enabled": true,
             "base_url": "https://api.sensor.community/v1/push-sensor-data/",
-            "sensor_id": "esp32-0e0408e8",
+            "sensor_id": "esp32-kowalski-0000",
             "interval_seconds": 145,
             "software_version": "pengy-wifi-1.0"
         },

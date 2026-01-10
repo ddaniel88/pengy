@@ -1,11 +1,6 @@
 # sensors/bme280.py
-# BME280 / BMP280 senzor u stilu projekta
-from machine import I2C, Pin
 import time
 from sensors.base import BaseEnvSensor
-
-# isti I2C kao i za sen55 / sps30
-_i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 
 # default adresa – većina modula je 0x76, neki su 0x77
 _DEFAULT_ADDR = 0x76
@@ -135,8 +130,8 @@ class _RawBME280:
 
 
 class Bme280Sensor(BaseEnvSensor):
-    def __init__(self, address=_DEFAULT_ADDR):
-        self._bme = _RawBME280(_i2c, address)
+    def __init__(self, i2c, address=_DEFAULT_ADDR):
+        self._bme = _RawBME280(i2c, address)
 
     def get_supported_fields(self):
         return ["temperature", "humidity", "pressure"]
