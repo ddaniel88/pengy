@@ -1,4 +1,5 @@
-# main.py
+# main.py (refactored for dual MQTT, secure OTA, clean structure)
+
 import network
 import socket
 import time
@@ -7,75 +8,75 @@ import machine
 import ntptime
 import led_status
 import os
-import aqi_utils
 import gc
+import aqi_utils
 
-from sensors.sen55 import Sen55Sensor
-from sensors.manager import SensorManager
 from net import mqtt_client
-import setup
 import offline_buffer
-from uploader.external_manager import ExternalManager
 from maintenance_handler import MaintenanceHandler
 from ota import ota_manager
 from ota import ota_state
+from sensors.manager import SensorManager
+from sensors.factory import create_sensors
+from uploader.external_manager import ExternalManager
+
+print("NOVI MAIN - updated")
 
 try:
     from uploader.sensor_community import get_last_sc
 except ImportError:
     get_last_sc = None
-    
-FIRMWARE_VERSION = "2025-11-21_01"  # ista kao u manifestu
 
+
+FIRMWARE_VERSION = "2025-11-21_02"
 CONFIG_FILE = "config.json"
+UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
-UNIX_EPOCH_OFFSET = 946684800  # sekundi od 1970 do 2000
-
-# RAM buffer za minutne
+# RAM buffer for minute-level fallback
 MINUTE_RAM_LIMIT = 30
 minute_ram_buffer = []
 
-led_status.set_boot()
-
-# globali za status
-last_aggregated_measurement = None
-minute_measurements_buffer = []
+# global state
+config = None
 device_meta = {}
 sensor_manager = None
-mqtt_client_instance = None
-config = None
+
+
+# ---------------------------------------------------------------------------
+# CONFIG & WIFI & TIME
+# ---------------------------------------------------------------------------
 
 def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             return ujson.loads(f.read())
-    except:
+    except Exception:
         return None
+
 
 def sync_time_utc():
     try:
         ntptime.host = "pool.ntp.org"
         ntptime.settime()
-        print("NTP time synced (UTC).")
+        print("NTP synced.")
     except Exception as exc:
         print("NTP sync failed:", exc)
 
-def connect_wifi(ssid: str, password: str, timeout_seconds: int = 15) -> bool:
+
+def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20) -> bool:
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
 
-    # pokušaj da očistiš prethodno stanje
     try:
         sta.disconnect()
-    except Exception:
+    except:
         pass
 
     if not sta.isconnected():
         try:
             sta.connect(ssid, password)
-        except OSError as exc:
-            # ovo je baš onaj "Wifi Internal Error"
-            print("WiFi connect OSError:", exc)
+        except Exception as exc:
+            print("WiFi connect error:", exc)
             return False
 
         start = time.time()
@@ -84,6 +85,11 @@ def connect_wifi(ssid: str, password: str, timeout_seconds: int = 15) -> bool:
 
     return sta.isconnected()
 
+
+# ---------------------------------------------------------------------------
+# STATUS HTTP SERVER
+# ---------------------------------------------------------------------------
+
 def start_status_server():
     addr = socket.getaddrinfo("0.0.0.0", 8080)[0][-1]
     s = socket.socket()
@@ -91,11 +97,13 @@ def start_status_server():
     s.bind(addr)
     s.listen(1)
     s.settimeout(0.1)
-    print("Status server on", addr)
+    print("Status server listening on", addr)
     return s
 
+
 def handle_status_request(sock):
-    global last_aggregated_measurement, sensor_manager, device_meta
+    global config, sensor_manager, device_meta
+
     try:
         client, addr = sock.accept()
     except OSError:
@@ -108,49 +116,239 @@ def handle_status_request(sock):
         except:
             req_txt = req.decode("utf-8", "ignore")
 
-        gc.collect()
         if "GET /status" in req_txt:
-            status_obj = {
+            body = ujson.dumps({
                 "supported_fields": sensor_manager.get_supported_fields() if sensor_manager else [],
-                "device": device_meta
-            }
-            
-            if get_last_sc:
-                status_obj["last_sc"] = get_last_sc()
-            
-            body = ujson.dumps(status_obj)
+                "device": device_meta,
+                "last_sc": get_last_sc() if get_last_sc else None
+            })
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
             client.send(body)
+
         elif "GET /config" in req_txt:
-            body = ujson.dumps(config)
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
-            client.send(body)
+            client.send(ujson.dumps(config))
+
         elif "GET /info" in req_txt:
             now = time.time()
             unix_ts = now + UNIX_EPOCH_OFFSET
-            
             info = {
-                "fw": device_meta.get("version"),
+                "fw": FIRMWARE_VERSION,
                 "device": device_meta.get("uid"),
                 "geo": {
                     "lat": device_meta.get("lat"),
                     "lon": device_meta.get("lon"),
                     "altitude": device_meta.get("altitude"),
+                    "ground_offset": device_meta.get("ground_offset"),
                 },
                 "streams": device_meta.get("streams", []),
                 "ts": unix_ts
             }
             client.send(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
             client.send(ujson.dumps(info))
+
         else:
             client.send(b"HTTP/1.0 404 Not Found\r\n\r\n")
+
     except Exception as exc:
-        print("status handler error:", exc)
+        print("Status server error:", exc)
     finally:
         client.close()
         gc.collect()
 
-def calculate_aggregated(measurements):
+
+# ---------------------------------------------------------------------------
+# MINUTE RAM BUFFER
+# ---------------------------------------------------------------------------
+
+def add_minute_to_ram(topic: str, payload: str):
+    global minute_ram_buffer
+    minute_ram_buffer.append((topic, payload))
+    if len(minute_ram_buffer) > MINUTE_RAM_LIMIT:
+        minute_ram_buffer.pop(0)
+
+
+def flush_minute_ram(mqtt_client_instance, cfg):
+    global minute_ram_buffer
+    if not minute_ram_buffer:
+        return mqtt_client_instance
+
+    still = []
+    for topic, payload in minute_ram_buffer:
+        mqtt_client_instance, ok, net_err = mqtt_client.publish(
+            mqtt_client_instance,
+            {"mqtt": cfg},
+            topic.encode(),
+            payload,
+            retain=False,
+            message_type="minute",
+            from_flush=True,
+        )
+        if not ok and net_err:
+            still.append((topic, payload))
+
+    minute_ram_buffer = still
+    return mqtt_client_instance
+
+# ---------------------------------------------------------------------------
+# MQTT INITIALIZATION (dual client support)
+# ---------------------------------------------------------------------------
+
+def init_mqtt_clients(config, sensor_manager, uid):
+    """
+    Kreira primary i secondary MQTT klijente na osnovu configa.
+    Vraća:
+        mqtt_clients = [("primary", client, cfg), ("secondary", client, cfg)]
+        ota_client = klijent koji sme da prihvati OTA (ili None)
+        maintenance = MaintenanceHandler ili None
+    """
+
+    mqtt_clients = []
+
+    # --- PRIMARY ---
+    primary_client, primary_cfg = mqtt_client.connect_named(config, "mqtt_primary")
+    if primary_client:
+        mqtt_clients.append(("primary", primary_client, primary_cfg))
+
+    # --- SECONDARY ---
+    secondary_client, secondary_cfg = mqtt_client.connect_named(config, "mqtt_secondary")
+    if secondary_client:
+        mqtt_clients.append(("secondary", secondary_client, secondary_cfg))
+
+    # ----------------------------------------------------------------------
+    # Flush offline buffer for each MQTT client
+    # ----------------------------------------------------------------------
+    for name, client, cfg in mqtt_clients:
+        print("[MQTT] Flushing offline buffer for:", name)
+        offline_buffer.flush_buffer(client, {"mqtt": cfg}, mqtt_client.publish)
+
+    # ----------------------------------------------------------------------
+    # Determine OTA handler MQTT client
+    # ----------------------------------------------------------------------
+    ota_client = None
+    maintenance = None
+
+    sec_opts = config.get("security", {})
+    require_secure_ota = sec_opts.get("require_secure_ota", False)
+
+    for name, client, cfg in mqtt_clients:
+        allow = cfg.get("allow_ota_commands", False)
+        tls_enabled = cfg.get("tls", False)
+
+        if not allow:
+            continue
+
+        # If OTA must be secure → broker must have TLS
+        if require_secure_ota and not tls_enabled:
+            print("[OTA] Ignoring", name, "because secure OTA required.")
+            continue
+
+        print("[OTA] Using", name, "for OTA commands.")
+
+        ota_client = client
+        maintenance = MaintenanceHandler(
+            client,
+            config,
+            sensor_manager,
+            cfg.get("base_topic", "pengy/rs/nis"),
+            uid
+        )
+
+        cmd_topic = "{}/{}/cmd/#".format(cfg["base_topic"], uid)
+        mqtt_client.setup_downlink(client, cmd_topic, maintenance.handle_command)
+
+        break  # use only one OTA-enabled MQTT broker
+
+    return mqtt_clients, ota_client, maintenance
+
+
+# ---------------------------------------------------------------------------
+# MQTT PUBLISH HELPERS
+# ---------------------------------------------------------------------------
+
+def publish_to_all(mqtt_clients, uid, payload_dict, msg_type):
+    """
+    Publikuje na sve MQTT klijente u listi mqtt_clients.
+    payload_dict: Python dict → biće konvertovan u JSON.
+    msg_type: "minute" ili "agg"
+    """
+
+    payload = ujson.dumps(payload_dict)
+
+    for name, client, cfg in mqtt_clients:
+        topic = "{}/{}/{}".format(cfg["base_topic"], uid, msg_type)
+
+        client, ok, net_err = mqtt_client.publish(
+            client,
+            {"mqtt": cfg},
+            topic.encode(),
+            payload,
+            retain=cfg.get("retain", False),
+            message_type=msg_type,
+        )
+
+        if not ok and net_err:
+            print("[MQTT] Failed on", name, "err:", net_err)
+
+
+# ---------------------------------------------------------------------------
+# MINUTE SAMPLING + AQI LED
+# ---------------------------------------------------------------------------
+
+def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid, mqtt_clients, config, external_mgr):
+    """
+    Radi jedan minut merenja (samples_per_min merenja).
+    Vraća:
+        minute_data_payload (dict)
+    """
+
+    measurement = sensor_manager.measure_minute_all(
+        samples_count=samples_per_min,
+        interval_seconds=2,
+        trim_extremes=trim_extremes
+    )
+
+    pm25 = (
+        measurement.get("pm25") or measurement.get("pm2_5") or measurement.get("pm_2_5")
+    )
+    pm10 = (
+        measurement.get("pm10") or measurement.get("pm10_0") or measurement.get("pm_10")
+    )
+
+    # LED AQI
+    aqi = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
+    led_status.set_aqi_level(aqi)
+    time.sleep(1)
+
+    # normalize
+    supported = sensor_manager.get_supported_fields()
+    normalized = {}
+    for key in supported:
+        if key in measurement and measurement[key] is not None:
+            normalized[key] = measurement[key]
+
+    now = time.time() + UNIX_EPOCH_OFFSET
+
+    payload = {
+        "device": uid,
+        "ts": now,
+        "data": normalized
+    }
+
+    # SC upload
+    try:
+        external_mgr.send_all(measurement)
+    except Exception as exc:
+        print("[External] Sensor.Community error:", exc)
+
+    return payload, pm25, pm10
+
+
+# ---------------------------------------------------------------------------
+# AGGREGATION
+# ---------------------------------------------------------------------------
+
+def calculate_aggregated(measurements, agg_window):
     if not measurements:
         return None
 
@@ -159,333 +357,211 @@ def calculate_aggregated(measurements):
         if m:
             all_keys.update(m.keys())
 
-    meta_fields = set()
-
     agg = {}
     for k in all_keys:
-        if k in meta_fields:
-            continue
-        vals = []
-        for m in measurements:
-            if not m:
-                continue
-            v = m.get(k)
-            if isinstance(v, (int, float)):
-                vals.append(v)
-        agg[k] = sum(vals) / len(vals) if vals else None
+        values = [m[k] for m in measurements if m and isinstance(m.get(k), (int, float))]
+        agg[k] = sum(values) / len(values) if values else None
 
-    now = time.time()
-    unix_ts = now + UNIX_EPOCH_OFFSET
-    
-    agg["minutes"] = len(measurements)
-    agg["ts"] = unix_ts
-    return agg
+    now = time.time() + UNIX_EPOCH_OFFSET
+    return {
+        "ts": now,
+        "minutes": agg_window,
+        "data": agg
+    }
 
-def on_mqtt_cmd(topic, msg):
-    # za sada samo ispiši
-    print("MQTT CMD:", topic, msg)
-    # ovde ćemo kasnije: reboot, force upload, pull update...
+# ---------------------------------------------------------------------------
+# OTA CYCLE HANDLER
+# ---------------------------------------------------------------------------
 
-def add_minute_to_ram(topic: str, payload: str):
-    global minute_ram_buffer
-    minute_ram_buffer.append((topic, payload))
-    if len(minute_ram_buffer) > MINUTE_RAM_LIMIT:
-        # FIFO – izbaci najstariju
-        minute_ram_buffer.pop(0)
+def handle_ota_cycle(maintenance, config):
+    """
+    Proverava da li je OTA zatražen i pokreće update.
+    Ako OTA uspe → machine.reset() i ova funkcija se ne vraća.
+    """
+    if not maintenance:
+        return
 
-def flush_minute_ram(mqtt_client_instance, config):
-    global minute_ram_buffer
-    if not minute_ram_buffer:
-        return mqtt_client_instance
+    requested, ota_data = maintenance.consume_ota_request()
+    if not requested:
+        return
 
-    still_pending = []
-    for topic, payload in minute_ram_buffer:
-        mqtt_client_instance, ok, net_err = mqtt_client.publish(
-            mqtt_client_instance,
-            config,
-            topic.encode(),
-            payload,
-            False,
-            0,
-            "minute",
-            from_flush=True,
-        )
-        if not ok and net_err:
-            still_pending.append((topic, payload))
+    print("[OTA] Update requested → running OTA")
+    led_status.set_mode("OTA_IN_PROGRESS")
 
-    minute_ram_buffer = still_pending
-    return mqtt_client_instance
-
-def run_ota_update(config):
-    print("Starting OTA update…")
-
-    # 1) LED – OTA mode (biramo mod kasnije)
-    try:
-        led_status.set_mode("OTA_IN_PROGRESS")
-    except:
-        pass
-
-    # 2) Start OTA
     ok = ota_manager.start_update(config)
 
-    # ako start_update uspe, machine.reset se već desio
     if ok:
-        return True
+        # OTA manager će resetovati uređaj.
+        return
 
-    # Ako OTA uspe, reset je već odrađen u ota_manager.start_update…
-    # Ovaj kod se izvršava samo ako OTA NIJE uspela.
-    print("OTA update failed.")
+    print("[OTA] Update failed")
     try:
         led_status.set_mode("OTA_ERROR")
     except:
         pass
 
-    return False
+
+# ---------------------------------------------------------------------------
+# BUFFER FLUSH HANDLER
+# ---------------------------------------------------------------------------
+
+def flush_all_buffers(mqtt_clients, config):
+    """
+    Flush file-based offline buffer + RAM minute buffer.
+    """
+    for name, client, cfg in mqtt_clients:
+        client, _ = offline_buffer.flush_buffer(
+            client,
+            {"mqtt": cfg},
+            mqtt_client.publish,
+        )
+        client = flush_minute_ram(client, cfg)
+
+
+# ---------------------------------------------------------------------------
+# MAIN LOOP
+# ---------------------------------------------------------------------------
 
 def main():
-    print("This is updated V1 main")
-    # 1. ako je postavljen flag - idi u setup mod
-    go_setup = False
-    try:
-        os.stat("enter_setup.flag")
-        go_setup = True
-        # obriši flag da ne ulazi stalno
-        try:
-            os.remove("enter_setup.flag")
-        except OSError:
-            pass
-    except OSError:
-        # nema flag-a
-        pass
+    global config, device_meta, sensor_manager
 
-    if go_setup:
-        # ovo blokira do timeout-a ili do uspešnog POST-a
-        # ako istekne timeout, setup.run_setup_mode() će da vrati kontrolu
-        setup.run_setup_mode(timeout_seconds=180)
-    
-    global minute_measurements_buffer
-    global last_aggregated_measurement, sensor_manager, mqtt_client_instance, config, device_meta
+    print("Pengy boot (refactored dual-MQTT version)")
+    led_status.set_boot()
 
+    # Load config
     config = load_config()
     if not config:
-        print("No config, entering setup mode...")
+        print("Config missing → entering setup mode")
+        import setup
         setup.run_setup_mode()
         return
 
-    wifi_ok = connect_wifi(config["wifi"]["ssid"], config["wifi"]["password"])
-    """
-    if not wifi_ok:
-        print("Cannot connect to WiFi, entering setup mode...")
-        led_status.set_wifi_fail_mode(True)
-        setup.run_setup_mode()
-        return
-    """
+    # WiFi
+    wifi_cfg = config.get("wifi", {})
+    ssid = wifi_cfg.get("ssid")
+    password = wifi_cfg.get("password")
+    wifi_ok = connect_wifi(ssid, password)
+    print("WiFi:", "OK" if wifi_ok else "FAIL")
 
-    print("WiFi connected.")
-    led_status.set_off()
     sync_time_utc()
 
-    # device meta i config
+    # Device meta
     device_meta = config.get("device", {})
-    base_topic = config.get("mqtt", {}).get("base_topic", "pengy/rs/nis")
     uid = device_meta.get("uid", "unknown")
-    
-    # senzori
-    sen55 = Sen55Sensor()
-    sensor_manager = SensorManager([sen55])
 
-    # MQTT
-    mqtt_client_instance = mqtt_client.connect_mqtt(config)
-    
-    # odmah probaj da isprazniš offline fajl (ako je bilo restarta bez neta)
-    mqtt_client_instance, _ = offline_buffer.flush_buffer(
-        mqtt_client_instance,
-        config,
-        mqtt_client.publish,
+    # Sensors
+    sensors = create_sensors(device_meta)
+    sensor_manager = SensorManager(sensors)
+
+    # MQTT initialize
+    mqtt_clients, ota_client, maintenance = init_mqtt_clients(
+        config, sensor_manager, uid
     )
-    # minute iz RAM-a nemamo posle restarta, to je ok
 
-    # maintenance
-    maintenance = None
-    if mqtt_client_instance:
-        maintenance = MaintenanceHandler(
-            mqtt_client_instance,
-            config,
-            sensor_manager,
-            base_topic,
-            uid
-        )
-        cmd_topic = "{}/{}/cmd/#".format(base_topic, uid)
-        mqtt_client.setup_downlink(
-            mqtt_client_instance,
-            cmd_topic,
-            maintenance.handle_command
-        )
-
-    status_server = start_status_server()
-
-    sampling_cfg = config.get("sampling", {})
-    samples_per_minute = sampling_cfg.get("samples_per_min", 5)
-    trim_extremes = sampling_cfg.get("trim", True)
-    aggregation_window = sampling_cfg.get("agg_window", 10)
-
-    # uploader
+    # External uploader (sensor.community...)
     external_mgr = ExternalManager(config, device_meta)
 
-    minute_counter = 0
-    now = time.time()
-    unix_ts = now + UNIX_EPOCH_OFFSET
-    last_minute_ts = unix_ts
-    last_flush_ts = unix_ts
-    #last_wifi_blink = time.ticks_ms()
-    
-    # Ako smo u TRY_UPDATE fazi, markiraj firmware kao uspešan
-    state = ota_state.load_state()
-    if state.get("state") == ota_state.STATE_TRY_UPDATE:
-        ota_state.mark_successful("test-ota-1")  # ovde će kasnije ići prava verzija
-        
+    # Status HTTP server
+    status_srv = start_status_server()
+
+    # Sampling config
+    sampling_cfg = config.get("sampling", {})
+    samples_per_min = sampling_cfg.get("samples_per_min", 5)
+    trim_extremes = sampling_cfg.get("trim", True)
+    agg_window = sampling_cfg.get("agg_window", 10)
+
+    minute_measurements = []
+    last_minute_ts = time.time() + UNIX_EPOCH_OFFSET
+    last_flush_ts = last_minute_ts
+
+    # OTA TRY_UPDATE → mark success
     state = ota_state.load_state()
     if state.get("state") == ota_state.STATE_TRY_UPDATE:
         ota_state.mark_successful(FIRMWARE_VERSION)
 
     sta = network.WLAN(network.STA_IF)
-    while True:
-        wifi_connected = sta.isconnected()
-        
-        # javi LED-u da li treba Wi-Fi blink mod
-        led_status.set_wifi_fail_mode(not wifi_connected)
 
-        # prepusti led_status-u da sam odradi treptanje
-        led_status.tick()
-                
+    # -----------------------------------------------------------------------
+    # MAIN LOOP
+    # -----------------------------------------------------------------------
+    while True:
         now = time.time() + UNIX_EPOCH_OFFSET
 
-        # HTTP
-        handle_status_request(status_server)
+        # WiFi LED status
+        led_status.set_wifi_fail_mode(not sta.isconnected())
+        led_status.tick()
 
-        # MQTT downlink
-        if mqtt_client_instance:
+        # Handle HTTP status server
+        handle_status_request(status_srv)
+
+        # MQTT downlink (only OTA broker)
+        if ota_client:
             try:
-                mqtt_client_instance.check_msg()
+                ota_client.check_msg()
             except:
                 pass
-        
-        # OTA
-        if maintenance is not None:
-            requested, ota_data = maintenance.consume_ota_request()
-            if requested:
-                print("OTA requested, pausing main loop…")
-                # Ovde izlazimo iz glavne petlje i radimo OTA
-                run_ota_update(config)
-                # Ako OTA uspe, ovo se nikad ne izvrši (reset).
-                # Ako ne uspe, vraćamo se u normalan rad (ili ne, po želji).
 
+        # OTA cycle
+        handle_ota_cycle(maintenance, config)
+
+        # ---------------------------
+        # Minute sampling
+        # ---------------------------
         if now - last_minute_ts >= 60:
-            print("⏱ minute", minute_counter)
             led_status.set_measuring()
-            measurement = sensor_manager.measure_minute_all(
-                samples_count=samples_per_minute,
-                interval_seconds=1,
-                trim_extremes=trim_extremes
-            )
-            
-            pm25 = (
-                measurement.get("pm25")
-                or measurement.get("pm2_5")
-                or measurement.get("pm_2_5")
-            )
-            pm10 = (
-                measurement.get("pm10")
-                or measurement.get("pm10_0")
-                or measurement.get("pm_10")
+            payload, pm25, pm10 = perform_minute_sampling(
+                sensor_manager,
+                samples_per_min,
+                trim_extremes,
+                uid,
+                mqtt_clients,
+                config,
+                external_mgr
             )
 
-            aqi_level = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
-            led_status.set_aqi_level(aqi_level)
-            time.sleep(1)
-            
-            supported = sensor_manager.get_supported_fields()
-            normalized = {}
-            
-            for key in supported:
-                if measurement and key in measurement and measurement[key] is not None:
-                    normalized[key] = measurement[key]
-            
-            # standardizovan payload za MQTT
-            payload = {
-                "device": uid,
-                "ts": now,
-                "data": normalized or {}
-            }
+            # Publish minute to all MQTT brokers
+            publish_to_all(mqtt_clients, uid, payload, "minute")
 
-            # external send (sensor.community...)
-            if measurement:
-                gc.collect()
-                external_mgr.send_all(measurement)
+            print("Sent minute:", "PM2.5", pm25, "PM10", pm10)
 
-            # publish na MQTT
-            if mqtt_client_instance:
-                gc.collect()
-                minute_topic = "{}/{}/minute".format(base_topic, uid)
-                message = ujson.dumps(payload)
-                mqtt_client_instance, ok, net_err = mqtt_client.publish(
-                    mqtt_client_instance,
-                    config,
-                    minute_topic.encode(),
-                    message,
-                    retain=False,
-                    message_type="minute",
-                )
-                
-                if not ok and net_err:
-                    # čuvamo samo ako je mreža, i samo u RAM
-                    print("Not sent to MQTT, Network error.")
-                    add_minute_to_ram(minute_topic, message)
-                else:
-                    print("Sent to MQTT. PM2.5: ", pm25, "PM10: ", pm10)
+            # Aggregation buffer
+            minute_measurements.append(payload["data"])
+            if len(minute_measurements) >= agg_window:
+                agg = calculate_aggregated(minute_measurements, agg_window)
+                if agg:
+                    agg_payload = {
+                        "device": uid,
+                        "ts": agg["ts"],
+                        "minutes": agg_window,
+                        "data": agg["data"]
+                    }
+                    publish_to_all(mqtt_clients, uid, agg_payload, "agg")
 
-            gc.collect()
-            
-            # agregacija
-            if measurement:
-                minute_measurements_buffer.append(measurement)
-                if len(minute_measurements_buffer) >= aggregation_window:
-                    last_aggregated_measurement = calculate_aggregated(minute_measurements_buffer)
-                    # po želji: publish i agg
-                    if mqtt_client_instance and last_aggregated_measurement:
-                        agg_topic = "{}/{}/agg".format(base_topic, uid)
-                        
-                        mqtt_client_instance, ok, net_err = mqtt_client.publish(
-                            mqtt_client_instance,
-                            config,
-                            agg_topic.encode(),
-                            ujson.dumps(last_aggregated_measurement),
-                            retain=False,
-                            message_type="aggregate",
-                        )
-                        # ovde NIŠTA ne radimo – MqttClient će sam upisati u fajl
-                        # ako je mreža pala
-                    minute_measurements_buffer = []
+                minute_measurements = []
 
             last_minute_ts = now
-            minute_counter += 1
 
-        now = time.time() + UNIX_EPOCH_OFFSET
-
-        # npr. na svakih 30 sekundi
+        # ---------------------------
+        # FLUSH BUFFERS every 30 sec
+        # ---------------------------
         if now - last_flush_ts >= 30:
-            mqtt_client_instance, _ = offline_buffer.flush_buffer(
-                mqtt_client_instance,
-                config,
-                mqtt_client.publish,
-            )
-            mqtt_client_instance = flush_minute_ram(mqtt_client_instance, config)
+            flush_all_buffers(mqtt_clients, config)
             last_flush_ts = now
 
+        # Restore LED if needed
         if led_status.is_off():
             led_status.restore()
 
-        time.sleep_ms(1000)
+        time.sleep_ms(300)
 
-# auto-start
-main()
+
+# ---------------------------------------------------------------------------
+# AUTOSTART
+# ---------------------------------------------------------------------------
+
+try:
+    main()
+except Exception as exc:
+    print("FATAL ERROR:", exc)
+    machine.reset()
+
