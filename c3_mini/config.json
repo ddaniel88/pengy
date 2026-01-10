@@ -1,7 +1,7 @@
 {
     "wifi": {
         "ssid": "Dimitrov",
-        "password": "qdimitrov123"
+        "password": "password"
     },
     "ota": {
         "channel": "latest",
