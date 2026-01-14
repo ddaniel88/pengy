@@ -1,7 +1,7 @@
 {
     "wifi": {
         "ssid": "Dimitrov",
-        "password": "password"
+        "password": "qdimitrov123"
     },
     "ota": {
         "channel": "latest",
@@ -12,8 +12,8 @@
 		"enabled": false,
         "host": "3475845782674f5d8df5a2eba099bcc5.s1.eu.hivemq.cloud",
         "port": 8883,
-		"username": "*********",
-		"password": "*********",
+		"username": "pengy.iot",
+		"password": "0FcThqHjZtpOkLmrYpPM",
 		"tls": true,
 		"connect_retries": 5,
         "connect_backoff_ms": 400,
@@ -73,3 +73,4 @@
 		"ota_token": "VKTqVxoy7ddKpOXToagSUfG0MRoSp4akhKIbsEMZLepXc0qm87Z2iIG891HldRzA"
     }
 }
+

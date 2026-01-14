@@ -19,6 +19,7 @@ from ota import ota_state
 from sensors.manager import SensorManager
 from sensors.factory import create_sensors
 from uploader.external_manager import ExternalManager
+from uploader.sensor_community import SensorCommunityUploader
 
 try:
     from uploader.sensor_community import get_last_sc
@@ -509,7 +510,6 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
     # LED AQI
     aqi = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
     led_status.set_aqi_level(aqi)
-    time.sleep(1)
 
     # normalize
     supported = sensor_manager.get_supported_fields()
@@ -526,12 +526,12 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
         "data": normalized
     }
 
-    # SC upload
+    # External uploaders (npr. Pengy API). SC je izdvojen i NE ide ovde.
     try:
-        external_mgr.send_all(measurement)
+        external_mgr.send_all(normalized)
     except Exception as exc:
-        print("[External] Sensor.Community error:", exc)
-
+        print("[External] uploader error:", exc)
+    
     return payload, pm25, pm10
 
 
@@ -623,8 +623,7 @@ def flush_all_buffers(mqtt_clients, config):
 def main():
     global config, device_meta, sensor_manager
 
-    print("Pengy boot (refactored dual-MQTT version)")
-    led_status.set_boot()
+    led_status.set_startup_white()
 
     # Load config
     config = load_config()
@@ -656,8 +655,16 @@ def main():
     # MQTT initialize
     mqtt_clients, ota_slot = init_mqtt_clients(config, sensor_manager, uid)
 
-    # External uploader (sensor.community...)
-    external_mgr = ExternalManager(config, device_meta)
+    # External uploaders (without Sensor.Community, SC is independent)
+    external_mgr = ExternalManager(config, device_meta, include_sc=False)
+
+    # Sensor.Community (independent timer)
+    sc_cfg = config.get("external", {}).get("sensor_community", {})
+    sc_enabled = bool(sc_cfg.get("enabled", False))
+    sc_interval_s = int(sc_cfg.get("interval_seconds", 145) or 145)
+    sc_uploader = SensorCommunityUploader(config, device_meta) if sc_enabled else None
+    last_sc_ts = 0
+    last_measurement_for_sc = None
 
     # Status HTTP server
     status_srv = start_status_server()
@@ -759,12 +766,36 @@ def main():
         # OTA cycle
         maintenance = ota_slot["maintenance"] if ota_slot else None
         handle_ota_cycle(maintenance, config)
+            
+        # ---------------------------
+        # Sensor.Community independent timer
+        # ---------------------------
+        if sc_uploader and sta.isconnected():
+            if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
+
+                ok = False
+
+                if wait_for_network_ready(timeout_seconds=2):
+                    print("[SC] timer: ", now_raw - last_sc_ts)
+                    ok = sc_uploader.send(last_measurement_for_sc)
+                # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
+                if last_sc_ts == 0:
+                    last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
+                else:
+                    last_sc_ts += sc_interval_s
+
+                if ok:
+                    print("[SC] sent")
+                else:
+                    print("[SC] skipped/failed (send&forget)")
+        elif sc_uploader:
+            # nema WiFi: ne šaljemo, ne pamtimo "za kasnije"
+            pass
 
         # ---------------------------
         # Minute sampling
         # ---------------------------
         if now - last_minute_ts >= 60:
-            led_status.set_measuring()
             payload, pm25, pm10 = perform_minute_sampling(
                 sensor_manager,
                 samples_per_min,
@@ -775,11 +806,14 @@ def main():
                 external_mgr,
                 now
             )
+            
+            # čuvamo poslednje merenje za SC snapshot (normalized)
+            last_measurement_for_sc = payload["data"]
 
             # Publish minute to all MQTT brokers
             publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute")
 
-            print("Sent minute:", "PM2.5", pm25, "PM10", pm10)
+            print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
 
             # Aggregation buffer
             minute_measurements.append(payload["data"])
