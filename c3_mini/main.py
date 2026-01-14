@@ -50,6 +50,38 @@ sensor_manager = None
 last_ntp_sync_ts = 0
 
 
+
+# ---------------------------------------------------------------------------
+# WATCHDOG (WDT)
+# ---------------------------------------------------------------------------
+
+def init_watchdog(cfg: dict):
+    """Best-effort WDT init. Returns wdt or None."""
+    try:
+        wcfg = (cfg or {}).get("watchdog", {})
+        enabled = wcfg.get("enabled", True)
+        if not enabled:
+            print("[WDT] disabled by config")
+            return None
+
+        timeout_ms = int(wcfg.get("timeout_ms", 120_000) or 120_000)
+
+        # Some ports expose machine.WDT, some don't.
+        wdt = machine.WDT(timeout=timeout_ms)
+        print("[WDT] enabled, timeout_ms =", timeout_ms)
+        return wdt
+    except Exception as exc:
+        print("[WDT] unavailable/failed:", exc)
+        return None
+
+
+def wdt_feed(wdt):
+    try:
+        if wdt:
+            wdt.feed()
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # CONFIG & WIFI & TIME
 # ---------------------------------------------------------------------------
@@ -633,6 +665,12 @@ def main():
         setup.run_setup_mode()
         return
 
+    boot_ts = time.time()
+    BOOT_QUIET_S = int(config.get("power", {}).get("boot_quiet_s", 20) or 20)
+
+    # Watchdog (reset if we truly hang)
+    wdt = init_watchdog(config)
+
     # WiFi
     wifi_cfg = config.get("wifi", {})
     ssid = wifi_cfg.get("ssid")
@@ -692,10 +730,17 @@ def main():
     
     wifi_fail_count = 0
 
+    # Sensor fail recovery
+    sensor_fail_streak = 0
+    SENSOR_FAIL_THRESHOLD = int(config.get('recovery', {}).get('sensor_fail_threshold', 3) or 3)
+
     # -----------------------------------------------------------------------
     # MAIN LOOP
     # -----------------------------------------------------------------------
     while True:
+        # WDT feed (keep this very early)
+        wdt_feed(wdt)
+
         # ---------------------------
         # WiFi health check (every 10s)
         # ---------------------------
@@ -771,23 +816,27 @@ def main():
         # Sensor.Community independent timer
         # ---------------------------
         if sc_uploader and sta.isconnected():
-            if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
+            if (time.time() - boot_ts) >= BOOT_QUIET_S:
+                if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
 
-                ok = False
+                    ok = False
+                    time.sleep_ms(500)
+                    wdt_feed(wdt)
 
-                if wait_for_network_ready(timeout_seconds=2):
-                    print("[SC] timer: ", now_raw - last_sc_ts)
-                    ok = sc_uploader.send(last_measurement_for_sc)
-                # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
-                if last_sc_ts == 0:
-                    last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
-                else:
-                    last_sc_ts += sc_interval_s
+                    if wait_for_network_ready(timeout_seconds=2):
+                        print("[SC] timer: ", now_raw - last_sc_ts)
+                        wdt_feed(wdt)
+                        ok = sc_uploader.send(last_measurement_for_sc)
+                    # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
+                    if last_sc_ts == 0:
+                        last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
+                    else:
+                        last_sc_ts += sc_interval_s
 
-                if ok:
-                    print("[SC] sent")
-                else:
-                    print("[SC] skipped/failed (send&forget)")
+                    if ok:
+                        print("[SC] sent")
+                    else:
+                        print("[SC] skipped/failed (send&forget)")
         elif sc_uploader:
             # nema WiFi: ne šaljemo, ne pamtimo "za kasnije"
             pass
@@ -796,6 +845,7 @@ def main():
         # Minute sampling
         # ---------------------------
         if now - last_minute_ts >= 60:
+            wdt_feed(wdt)
             payload, pm25, pm10 = perform_minute_sampling(
                 sensor_manager,
                 samples_per_min,
@@ -806,12 +856,37 @@ def main():
                 external_mgr,
                 now
             )
+
+            if pm25 is None and pm10 is None:
+                sensor_fail_streak += 1
+                print("[Sensor] fail streak:", sensor_fail_streak)
+            else:
+                sensor_fail_streak = 0
+
+            if sensor_fail_streak >= SENSOR_FAIL_THRESHOLD:
+                print("[Sensor] reinitializing sensors after failures")
+                try:
+                    sensors = create_sensors(device_meta)
+                    sensor_manager = SensorManager(sensors)
+                except Exception as exc:
+                    print("[Sensor] reinit failed:", exc)
+                sensor_fail_streak = 0            
+                wdt_feed(wdt)
             
             # čuvamo poslednje merenje za SC snapshot (normalized)
-            last_measurement_for_sc = payload["data"]
+            if payload and isinstance(payload, dict) and "data" in payload:
+                last_measurement_for_sc = payload["data"]
+
+            time.sleep_ms(500)
 
             # Publish minute to all MQTT brokers
-            publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute")
+            wdt_feed(wdt)
+
+            if (time.time() - boot_ts) < BOOT_QUIET_S:
+                # skip SC/MQTT early after boot to reduce power spikes
+                pass
+            else:
+                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute")
 
             print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
 

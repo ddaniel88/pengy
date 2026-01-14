@@ -5,6 +5,7 @@ import time
 import machine
 import ujson
 import os
+import gc
 
 CONFIG_FILE = "config.json"
 
@@ -98,8 +99,8 @@ def save_config(cfg: dict):
 def start_access_point():
     ap = network.WLAN(network.AP_IF)
     ap.active(True)
-    ap.config(essid="SEN55-setup", password="12345678")
-    print("AP started: SEN55-setup / 12345678")
+    ap.config(essid="PENGY-setup", password="12345678")
+    print("AP started: PENGY-setup / 12345678")
     return ap
 
 # ---------- HTML ----------
@@ -266,8 +267,15 @@ def run_setup_mode(timeout_seconds=180):
 
     start_ms = time.ticks_ms()
 
+    last_gc_ms = time.ticks_ms()
     while True:
         # timeout check
+        # povremeno yield + gc (pomaže protiv retkih slučajeva gde IDF task_wdt pukne u setup modu)
+        if time.ticks_diff(time.ticks_ms(), last_gc_ms) > 5000:
+            gc.collect()
+            time.sleep_ms(10)
+            last_gc_ms = time.ticks_ms()
+
         if time.ticks_diff(time.ticks_ms(), start_ms) > timeout_seconds * 1000:
             print("Setup timeout -> exiting setup mode")
             break
@@ -276,6 +284,7 @@ def run_setup_mode(timeout_seconds=180):
             client, remote = s.accept()
         except OSError:
             # ništa nije došlo u ovom 1s
+            time.sleep_ms(50)
             continue
 
         start_ms = time.ticks_ms()

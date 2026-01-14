@@ -21,7 +21,15 @@ class SensorManager:
     def measure_minute_all(self, samples_count=10, interval_seconds=2, trim_extremes=True):
         result = {}
         for s in self.sensors:
-            m = s.measure_one_minute(samples_count, interval_seconds, trim_extremes)
+            try:
+                m = s.measure_one_minute(samples_count, interval_seconds, trim_extremes)
+            except Exception as ex:
+                try:
+                    name = s.__class__.__name__
+                except Exception:
+                    name = 'sensor'
+                print('[SENSORS] measure failed for', name, '->', ex)
+                m = None
             if m:
                 # jednostavno lepljenje – kasnije možemo da rešavamo konflikte
                 result.update(m)

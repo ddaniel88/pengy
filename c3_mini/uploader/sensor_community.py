@@ -32,6 +32,9 @@ class SensorCommunityUploader(BaseUploader):
         self.sensor_id = sc_cfg.get("sensor_id", "pengy-wifi-unknown")
         self.software_version = sc_cfg.get("software_version", "pengy-wifi-1.0")
 
+        # cycle flags (used to suppress retry on hard failures like HTTP 403)
+        self._saw_403_in_cycle = False
+
     def is_enabled(self) -> bool:
         return self.enabled
 
@@ -51,10 +54,18 @@ class SensorCommunityUploader(BaseUploader):
             print("SC disabled (no urequests)")
             return False
 
+        # reset per-send cycle flags
+        self._saw_403_in_cycle = False
+
         # 1st attempt
         ok = self._send_both(measurement)
         if ok:
             return True
+
+        # no retry for hard auth/registration errors
+        if self._saw_403_in_cycle:
+            print("SC 403 -> no retry this cycle")
+            return False
 
         # retry once
         time.sleep_ms(250)
@@ -173,6 +184,9 @@ class SensorCommunityUploader(BaseUploader):
             resp = requests.post(self.base_url, headers=headers, data=body)
             code = getattr(resp, "status_code", None)
             print("SC RESP:", code)
+
+            if code == 403:
+                self._saw_403_in_cycle = True
 
             # SC tipično vraća 201 kad je ok
             ok = (code == 201) or (code == 200)
