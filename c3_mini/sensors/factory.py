@@ -5,6 +5,7 @@ from boards.selector import load_board_config
 from sensors.sen55 import Sen55Sensor
 from sensors.sps30 import Sps30Sensor
 from sensors.bme280 import Bme280Sensor
+from sensors.sds011 import SDS011Sensor
 
 
 def _as_list(val):
@@ -63,6 +64,19 @@ def create_sensors(device_cfg: dict) -> list:
                     # device_cfg["bme280_address"] = 0x76 ili 0x77
                     addr = device_cfg.get("bme280_address")
                     sensors.append(Bme280Sensor(i2c, address=addr) if addr else Bme280Sensor(i2c))
+                elif name == "sds011":
+                    sensors.append(SDS011Sensor(
+                        uart_id=getattr(cfg, "SDS011_UART_ID", 1),
+                        tx_pin=getattr(cfg, "SDS011_UART_TX", 21),
+                        rx_pin=getattr(cfg, "SDS011_UART_RX", 20),
+                        baudrate=getattr(cfg, "SDS011_UART_BAUD", 9600),
+                        warmup_ms=device_cfg.get("sds011_warmup_ms", 3000),
+                        keep_awake_pm_threshold=device_cfg.get("sds011_keep_awake_pm_threshold", 200.0),
+                        keep_awake_hold_s=device_cfg.get("sds011_keep_awake_hold_s", 5 * 60),
+                        suspect_pm_threshold=device_cfg.get("sds011_suspect_pm_threshold", 800.0),
+                        suspect_hold_s=device_cfg.get("sds011_suspect_hold_s", 10 * 60),
+                        debug=bool(device_cfg.get("sds011_debug", False)),
+                    ))
                 else:
                     print("Unknown sensor in config:", name)
             except Exception as ex:

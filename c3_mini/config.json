@@ -45,7 +45,13 @@
         "ground_offset": 20.0,
         "status": "active",
         "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"],
-		"sensors": ["sps30", "bme280"]
+		"sensors": ["sps30", "bme280"],
+        
+        "sds011_keep_awake_pm_threshold": 200.0,
+        "sds011_keep_awake_hold_s": 300,
+        "sds011_suspect_pm_threshold": 800.0,
+        "sds011_suspect_hold_s": 600,
+        "sds011_warmup_ms": 3000
     },
     "sampling": {
         "samples_per_min": 10,
