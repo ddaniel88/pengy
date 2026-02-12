@@ -31,7 +31,7 @@ AQI_COLORS = [
     (0, 200, 120),       # good - tirkizno
     (0, 160, 40),        # fair - zelenkasto
     (200, 180, 0),       # moderate - žućkasto
-    (X_BRIGHT, 70, 0),   # 3 - narandžasto
+    (X_BRIGHT, 25, 0),   # 3 - narandžasto
     (X_BRIGHT, 0, 0),    # 4 - crveno
     (X_BRIGHT, 0, 90),   # 5 - ljubičasto
 ]
