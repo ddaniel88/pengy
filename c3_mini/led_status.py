@@ -16,7 +16,7 @@ COLOR_OK = (0, BRIGHT, 0)            # zeleno kad je online
 COLOR_WIFI_FAIL = (220, 0, 0)        # crveno kad nije online
 
 # STARTUP / pre prvog merenja
-COLOR_STARTUP_WHITE = (80, 80, 80)
+COLOR_STARTUP_WHITE = (0, 0, 180)
 
 # merenje = NE DIRAMO više (da bela ne stoji 30+ sekundi na SEN55)
 # ostavljamo definiciju čisto da postoji ako ti zatreba kasnije
