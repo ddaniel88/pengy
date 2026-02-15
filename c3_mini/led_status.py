@@ -16,7 +16,7 @@ COLOR_OK = (0, BRIGHT, 0)            # zeleno kad je online
 COLOR_WIFI_FAIL = (220, 0, 0)        # crveno kad nije online
 
 # STARTUP / pre prvog merenja
-COLOR_STARTUP_WHITE = (80, 80, 80)
+COLOR_STARTUP_WHITE = (0, 0, 80)
 
 # merenje = NE DIRAMO više (da bela ne stoji 30+ sekundi na SEN55)
 # ostavljamo definiciju čisto da postoji ako ti zatreba kasnije
@@ -31,7 +31,7 @@ AQI_COLORS = [
     (0, 200, 120),       # good - tirkizno
     (0, 160, 40),        # fair - zelenkasto
     (200, 180, 0),       # moderate - žućkasto
-    (X_BRIGHT, 70, 0),   # 3 - narandžasto
+    (X_BRIGHT, 27, 0),   # 3 - narandžasto
     (X_BRIGHT, 0, 0),    # 4 - crveno
     (X_BRIGHT, 0, 90),   # 5 - ljubičasto
 ]

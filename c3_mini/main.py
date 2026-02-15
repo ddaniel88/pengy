@@ -49,7 +49,7 @@ device_meta = {}
 sensor_manager = None
 last_ntp_sync_ts = 0
 
-
+_rtc = machine.RTC()
 
 # ---------------------------------------------------------------------------
 # WATCHDOG (WDT)
@@ -83,6 +83,34 @@ def wdt_feed(wdt):
         pass
 
 # ---------------------------------------------------------------------------
+# RTC
+# ---------------------------------------------------------------------------
+        
+def diag_set_stage(stage: str):
+    """Store last known stage in RTC memory for post-reset diagnostics."""
+    try:
+        payload = {"stage": stage, "t_ms": time.ticks_ms()}
+        _rtc.memory(ujson.dumps(payload))
+    except:
+        pass
+
+def diag_get_stage():
+    """Read last stage from RTC memory (if available)."""
+    try:
+        raw = _rtc.memory()
+        if not raw:
+            return None
+        return ujson.loads(raw)
+    except:
+        return None
+
+def diag_clear():
+    try:
+        _rtc.memory(b"")
+    except:
+        pass
+
+# ---------------------------------------------------------------------------
 # CONFIG & WIFI & TIME
 # ---------------------------------------------------------------------------
 
@@ -93,7 +121,7 @@ def load_config():
     except Exception:
         return None
 
-def wait_for_network_ready(timeout_seconds: int = 30) -> bool:
+def wait_for_network_ready(timeout_seconds: int = 30, wdt=None) -> bool:
     """
     Čeka da:
     - STA connected
@@ -106,6 +134,7 @@ def wait_for_network_ready(timeout_seconds: int = 30) -> bool:
     start = time.ticks_ms()
 
     while time.ticks_diff(time.ticks_ms(), start) < timeout_seconds * 1000:
+        wdt_feed(wdt)
         if not sta.isconnected():
             time.sleep_ms(300)
             continue
@@ -189,7 +218,7 @@ def ensure_time_synced(min_interval_s: int = 3600, force: bool = False) -> bool:
     return False
 
 
-def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20):
+def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20, wdt=None):
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
 
@@ -209,12 +238,13 @@ def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20):
 
         start = time.time()
         while not sta.isconnected() and (time.time() - start) < timeout_seconds:
+            wdt_feed(wdt)
             time.sleep(1)
 
     return sta, sta.isconnected()
 
 
-def ensure_wifi_connected(wifi_cfg, sta) -> bool:
+def ensure_wifi_connected(wifi_cfg, sta, wdt=None) -> bool:
     """
     Non-blocking runtime WiFi reconnect:
     - samo jedan pokušaj, bez sleep/backoff spirale
@@ -244,13 +274,16 @@ def ensure_wifi_connected(wifi_cfg, sta) -> bool:
     # kratko čekanje da uhvati link
     start = time.time()
     while not sta.isconnected() and (time.time() - start) < 8:
+        wdt_feed(wdt)
         time.sleep_ms(250)
 
     ok = sta.isconnected()
     print("[WiFi] Reconnect:", "OK" if ok else "FAIL")
 
     if ok:
-        wait_for_network_ready(timeout_seconds=10)
+        diag_set_stage("WAIT_NET_READY_RECONNECT")
+        wait_for_network_ready(timeout_seconds=10, wdt=wdt)
+        diag_set_stage("IDLE")
 
     return ok
 
@@ -423,12 +456,16 @@ def init_mqtt_clients(config, sensor_manager, uid):
 # MQTT PUBLISH HELPERS
 # ---------------------------------------------------------------------------
 
-def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type):
+def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type, wdt=None):
     payload = ujson.dumps(payload_dict)
 
     for entry in mqtt_clients:
+        wdt_feed(wdt)
+        diag_set_stage("MQTT_PUBLISH_" + msg_type.upper())
         cfg = entry["cfg"]
         topic = "{}/{}/{}".format(cfg["base_topic"], uid, msg_type)
+
+        diag_set_stage("MQTT_PUBLISH_CALL_" + msg_type.upper())
 
         client, ok, net_err, did_reconnect = _mqtt_publish_entry(
             entry,
@@ -451,6 +488,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             if did_reconnect:
                 ota_slot["subscribed"] = False
             _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+    diag_set_stage("IDLE")
 
 
 def _mqtt_publish_entry(entry, uid, topic, payload, retain, msg_type, from_flush=False):
@@ -653,9 +691,15 @@ def flush_all_buffers(mqtt_clients, config):
 # ---------------------------------------------------------------------------
 
 def main():
+    diag_set_stage("BOOT_START")
     global config, device_meta, sensor_manager
 
     led_status.set_startup_white()
+    
+    reset_cause = machine.reset_cause()
+    last_stage = diag_get_stage()
+    
+    diag_sent = False
 
     # Load config
     config = load_config()
@@ -667,34 +711,45 @@ def main():
 
     boot_ts = time.time()
     BOOT_QUIET_S = int(config.get("power", {}).get("boot_quiet_s", 20) or 20)
+    
+    diag_next_try_ts = 0
+    DIAG_RETRY_S = 10
 
     # Watchdog (reset if we truly hang)
     wdt = init_watchdog(config)
 
+    diag_set_stage("BOOT_WIFI_CONNECT")
     # WiFi
     wifi_cfg = config.get("wifi", {})
     ssid = wifi_cfg.get("ssid")
     password = wifi_cfg.get("password")
 
-    sta, wifi_ok = connect_wifi(ssid, password)
+    sta, wifi_ok = connect_wifi(ssid, password, wdt=wdt)
     print("WiFi:", "OK" if wifi_ok else "FAIL")
 
     if wifi_ok:
-        wait_for_network_ready(timeout_seconds=15)
+        diag_set_stage("WAIT_NET_READY_BOOT")
+        wait_for_network_ready(timeout_seconds=15, wdt=wdt)
+        diag_set_stage("IDLE")
 
     # Device meta
     device_meta = config.get("device", {})
     uid = device_meta.get("uid", "unknown")
 
     # Sensors
+    diag_set_stage("BOOT_INIT_SENSORS")
     sensors = create_sensors(device_meta)
     sensor_manager = SensorManager(sensors)
 
     # MQTT initialize
+    diag_set_stage("BOOT_INIT_MQTT")
     mqtt_clients, ota_slot = init_mqtt_clients(config, sensor_manager, uid)
 
     # External uploaders (without Sensor.Community, SC is independent)
+    diag_set_stage("BOOT_EXTERNAL_MANAGER")
     external_mgr = ExternalManager(config, device_meta, include_sc=False)
+
+    diag_set_stage("BOOT_READY")
 
     # Sensor.Community (independent timer)
     sc_cfg = config.get("external", {}).get("sensor_community", {})
@@ -748,7 +803,9 @@ def main():
         
         if not sta.isconnected():
             if now_raw >= wifi_next_retry_ts:
-                ok = ensure_wifi_connected(wifi_cfg, sta)
+                diag_set_stage("WIFI_RECONNECT")
+                ok = ensure_wifi_connected(wifi_cfg, sta, wdt=wdt)
+                diag_set_stage("IDLE")
                 if ok:
                     wifi_fail_count = 0
                 else:
@@ -761,12 +818,14 @@ def main():
         if wifi_fail_count >= 5:
             print("[WiFi] Hard reset STA interface")
             try:
+                diag_set_stage("WIFI_HARD_RESET_STA")
                 sta.active(False)
                 time.sleep_ms(500)
                 sta.active(True)
                 disable_wifi_powersave(sta)
                 wifi_fail_count = 0
                 wifi_next_retry_ts = now_raw + 5
+                diag_set_stage("IDLE")
             except Exception as exc:
                 print("[WiFi] Hard reset failed:", exc)
         
@@ -778,6 +837,38 @@ def main():
 
         # Handle HTTP status server
         handle_status_request(status_srv)
+        
+        # ---------------------------
+        # BOOT DIAG (send ASAP after boot_quiet + wifi)
+        # ---------------------------
+        if not diag_sent:
+            if (time.time() - boot_ts) >= BOOT_QUIET_S and sta.isconnected() and now_raw >= diag_next_try_ts:
+                diag_set_stage("MQTT_PUBLISH_DIAG")
+                diag_payload = {
+                    "device": uid,
+                    "ts": now,
+                    "fw": FIRMWARE_VERSION,
+                    "reset_cause": reset_cause,
+                    "last_stage": last_stage.get("stage") if last_stage else None,
+                    "last_stage_ms": last_stage.get("t_ms") if last_stage else None,
+                    "mem_free": gc.mem_free(),
+                    "wifi": True,
+                    "wifi_fail_count": wifi_fail_count,
+                    "rssi": sta.status("rssi") if sta.isconnected() else None,
+                    "uptime_ms": time.ticks_ms()
+                }
+                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
+                
+                diag_next_try_ts = now_raw + DIAG_RETRY_S
+
+                # pošto publish_to_all ne vraća ok, igramo safe:
+                # - označi kao poslato odmah (da ne spamuje)
+                # - ili, ako želiš retry, ostavi diag_sent False i samo pomeri diag_next_try_ts
+                diag_sent = True
+                diag_clear()
+                diag_set_stage("IDLE")
+            elif now_raw >= diag_next_try_ts:
+                diag_next_try_ts = now_raw + DIAG_RETRY_S
 
         # --- OTA MQTT keepalive / probe ---
         if ota_slot and not ota_slot.get("client"):
@@ -786,7 +877,11 @@ def main():
                 ota_next_probe_ts = now_raw + OTA_PROBE_S
                 if now_raw >= ota_slot["next_retry_ts"]:
                     print("[OTA] probe connect...")
+                    diag_set_stage("OTA_PROBE_CONNECT")
+                    wdt_feed(wdt)
                     c = mqtt_client.connect_mqtt({"mqtt": ota_slot["cfg"]})
+                    wdt_feed(wdt)
+                    diag_set_stage("IDLE")
                     if c:
                         ota_slot["client"] = c
                         ota_slot["subscribed"] = False
@@ -798,15 +893,21 @@ def main():
         # MQTT downlink (OTA)
         if ota_slot and ota_slot.get("client"):
             try:
+                diag_set_stage("OTA_CHECK_MSG")
+                wdt_feed(wdt)
                 ota_slot["client"].check_msg()
+                wdt_feed(wdt)
+                diag_set_stage("IDLE")
             except:
                 # ako pukne, pusti da publish/probe ponovo uspostavi
+                diag_set_stage("OTA_CHECK_MSG_FAIL")
                 try:
                     ota_slot["client"].disconnect()
                 except:
                     pass
                 ota_slot["client"] = None
                 ota_slot["subscribed"] = False
+                diag_set_stage("IDLE")
 
         # OTA cycle
         maintenance = ota_slot["maintenance"] if ota_slot else None
@@ -823,10 +924,12 @@ def main():
                     time.sleep_ms(500)
                     wdt_feed(wdt)
 
-                    if wait_for_network_ready(timeout_seconds=2):
+                    if wait_for_network_ready(timeout_seconds=2, wdt=wdt):
                         print("[SC] timer: ", now_raw - last_sc_ts)
                         wdt_feed(wdt)
+                        diag_set_stage("SC_SEND")
                         ok = sc_uploader.send(last_measurement_for_sc)
+                        diag_set_stage("IDLE")
                     # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
                     if last_sc_ts == 0:
                         last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
@@ -846,6 +949,7 @@ def main():
         # ---------------------------
         if now - last_minute_ts >= 60:
             wdt_feed(wdt)
+            diag_set_stage("MEASURE_MINUTE")
             payload, pm25, pm10 = perform_minute_sampling(
                 sensor_manager,
                 samples_per_min,
@@ -856,6 +960,8 @@ def main():
                 external_mgr,
                 now
             )
+            
+            diag_set_stage("IDLE")
 
             if pm25 is None and pm10 is None:
                 sensor_fail_streak += 1
@@ -886,7 +992,8 @@ def main():
                 # skip SC/MQTT early after boot to reduce power spikes
                 pass
             else:
-                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute")
+                diag_set_stage("MQTT_PUBLISH_MINUTE")
+                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
 
             print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
 
@@ -901,7 +1008,8 @@ def main():
                         "minutes": agg_window,
                         "data": agg["data"]
                     }
-                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg")
+                    diag_set_stage("MQTT_PUBLISH_AGG")
+                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg", wdt=wdt)
 
                 minute_measurements = []
 
@@ -911,13 +1019,18 @@ def main():
         # FLUSH BUFFERS every 30 sec
         # ---------------------------
         if now - last_flush_ts >= 30:
+            diag_set_stage("FLUSH_BUFFERS")
+            wdt_feed(wdt)
             flush_all_buffers(mqtt_clients, config)
+            wdt_feed(wdt)
             last_flush_ts = now
+            diag_set_stage("IDLE")
 
         # Restore LED if needed
         if led_status.is_off():
             led_status.restore()
 
+        diag_set_stage("IDLE")
         time.sleep_ms(300)
 
 
