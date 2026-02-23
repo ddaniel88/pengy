@@ -11,6 +11,8 @@ import os
 import gc
 import aqi_utils
 
+import pengy_diag as pdiag
+
 from net import mqtt_client
 import offline_buffer
 from maintenance_handler import MaintenanceHandler
@@ -83,32 +85,21 @@ def wdt_feed(wdt):
         pass
 
 # ---------------------------------------------------------------------------
-# RTC
+# RTC (diagnostics)
 # ---------------------------------------------------------------------------
-        
+# We keep these wrapper functions so the rest of main.py stays unchanged.
+# Implementation is in pengy_diag.py. RTC usage can be disabled there.
+
 def diag_set_stage(stage: str):
-    """Store last known stage in RTC memory for post-reset diagnostics."""
-    try:
-        payload = {"stage": stage, "t_ms": time.ticks_ms()}
-        _rtc.memory(ujson.dumps(payload))
-    except:
-        pass
+    pdiag.set_stage(stage)
 
 def diag_get_stage():
-    """Read last stage from RTC memory (if available)."""
-    try:
-        raw = _rtc.memory()
-        if not raw:
-            return None
-        return ujson.loads(raw)
-    except:
-        return None
+    return pdiag.get_stage()
 
 def diag_clear():
-    try:
-        _rtc.memory(b"")
-    except:
-        pass
+    # Backwards-compatible: previously wiped entire RTC.
+    # Now we only clear crash info (stage is still useful).
+    pdiag.clear_crash()
 
 # ---------------------------------------------------------------------------
 # CONFIG & WIFI & TIME
@@ -458,6 +449,7 @@ def init_mqtt_clients(config, sensor_manager, uid):
 
 def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type, wdt=None):
     payload = ujson.dumps(payload_dict)
+    ok_any = False  # True if at least one broker publish succeeded
 
     for entry in mqtt_clients:
         wdt_feed(wdt)
@@ -476,6 +468,8 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             msg_type=msg_type,
             from_flush=False
         )
+        
+        ok_any = ok_any or ok
 
         if not ok and net_err:
             print("[MQTT] Failed on", entry["name"], "net err")
@@ -488,7 +482,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             if did_reconnect:
                 ota_slot["subscribed"] = False
             _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
-    diag_set_stage("IDLE")
+    return ok_any
 
 
 def _mqtt_publish_entry(entry, uid, topic, payload, retain, msg_type, from_flush=False):
@@ -691,13 +685,14 @@ def flush_all_buffers(mqtt_clients, config):
 # ---------------------------------------------------------------------------
 
 def main():
-    diag_set_stage("BOOT_START")
     global config, device_meta, sensor_manager
 
     led_status.set_startup_white()
     
     reset_cause = machine.reset_cause()
     last_stage = diag_get_stage()
+    
+    diag_set_stage("BOOT_START")
     
     diag_sent = False
 
@@ -793,245 +788,272 @@ def main():
     # MAIN LOOP
     # -----------------------------------------------------------------------
     while True:
-        # WDT feed (keep this very early)
-        wdt_feed(wdt)
+        try:
+            # WDT feed (keep this very early)
+            wdt_feed(wdt)
 
-        # ---------------------------
-        # WiFi health check (every 10s)
-        # ---------------------------
-        now_raw = time.time()
+            # ---------------------------
+            # WiFi health check (every 10s)
+            # ---------------------------
+            now_raw = time.time()
         
-        if not sta.isconnected():
-            if now_raw >= wifi_next_retry_ts:
-                diag_set_stage("WIFI_RECONNECT")
-                ok = ensure_wifi_connected(wifi_cfg, sta, wdt=wdt)
-                diag_set_stage("IDLE")
-                if ok:
-                    wifi_fail_count = 0
-                else:
-                    wifi_fail_count += 1
-                wifi_next_retry_ts = now_raw + WIFI_COOLDOWN_S
-        else:
-            wifi_next_retry_ts = 0
-            wifi_fail_count = 0
-            
-        if wifi_fail_count >= 5:
-            print("[WiFi] Hard reset STA interface")
-            try:
-                diag_set_stage("WIFI_HARD_RESET_STA")
-                sta.active(False)
-                time.sleep_ms(500)
-                sta.active(True)
-                disable_wifi_powersave(sta)
+            if not sta.isconnected():
+                if now_raw >= wifi_next_retry_ts:
+                    diag_set_stage("WIFI_RECONNECT")
+                    ok = ensure_wifi_connected(wifi_cfg, sta, wdt=wdt)
+                    diag_set_stage("IDLE")
+                    if ok:
+                        wifi_fail_count = 0
+                    else:
+                        wifi_fail_count += 1
+                    wifi_next_retry_ts = now_raw + WIFI_COOLDOWN_S
+            else:
+                wifi_next_retry_ts = 0
                 wifi_fail_count = 0
-                wifi_next_retry_ts = now_raw + 5
-                diag_set_stage("IDLE")
-            except Exception as exc:
-                print("[WiFi] Hard reset failed:", exc)
+            
+            if wifi_fail_count >= 5:
+                print("[WiFi] Hard reset STA interface")
+                try:
+                    diag_set_stage("WIFI_HARD_RESET_STA")
+                    sta.active(False)
+                    time.sleep_ms(500)
+                    sta.active(True)
+                    disable_wifi_powersave(sta)
+                    wifi_fail_count = 0
+                    wifi_next_retry_ts = now_raw + 5
+                    diag_set_stage("IDLE")
+                except Exception as exc:
+                    print("[WiFi] Hard reset failed:", exc)
         
-        now = now_raw + UNIX_EPOCH_OFFSET
+            now = now_raw + UNIX_EPOCH_OFFSET
 
-        # WiFi LED status
-        led_status.set_wifi_fail_mode(not sta.isconnected())
-        led_status.tick()
+            # WiFi LED status
+            led_status.set_wifi_fail_mode(not sta.isconnected())
+            led_status.tick()
 
-        # Handle HTTP status server
-        handle_status_request(status_srv)
+            # Handle HTTP status server
+            handle_status_request(status_srv)
         
-        # ---------------------------
-        # BOOT DIAG (send ASAP after boot_quiet + wifi)
-        # ---------------------------
-        if not diag_sent:
-            if (time.time() - boot_ts) >= BOOT_QUIET_S and sta.isconnected() and now_raw >= diag_next_try_ts:
-                diag_set_stage("MQTT_PUBLISH_DIAG")
-                diag_payload = {
-                    "device": uid,
-                    "ts": now,
-                    "fw": FIRMWARE_VERSION,
-                    "reset_cause": reset_cause,
-                    "last_stage": last_stage.get("stage") if last_stage else None,
-                    "last_stage_ms": last_stage.get("t_ms") if last_stage else None,
-                    "mem_free": gc.mem_free(),
-                    "wifi": True,
-                    "wifi_fail_count": wifi_fail_count,
-                    "rssi": sta.status("rssi") if sta.isconnected() else None,
-                    "uptime_ms": time.ticks_ms()
-                }
-                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
-                
-                diag_next_try_ts = now_raw + DIAG_RETRY_S
+            # ---------------------------
+            # BOOT DIAG (send ASAP after boot_quiet + wifi)
+            # ---------------------------
+            if not diag_sent:
+                if (time.time() - boot_ts) >= BOOT_QUIET_S and sta.isconnected() and now_raw >= diag_next_try_ts:
+                    diag_set_stage("MQTT_PUBLISH_DIAG")
+                    prev_crash, prev_crash_count = pdiag.peek_crash()
+                    diag_payload = {
+                        "device": uid,
+                        "ts": now,
+                        "fw": FIRMWARE_VERSION,
+                        "reset_cause": reset_cause,
+                        "last_stage": last_stage.get("stage") if last_stage else None,
+                        "last_stage_ms": last_stage.get("t_ms") if last_stage else None,
+                        "mem_free": gc.mem_free(),
+                        "wifi": sta.isconnected(),
+                        "wifi_fail_count": wifi_fail_count,
+                        "rssi": sta.status("rssi") if sta.isconnected() else None,
+                        "uptime_ms": time.ticks_ms()
+                    }
+                    
+                    # Include prev_crash only if it exists (avoid payload noise)
+                    if prev_crash:
+                        diag_payload["prev_crash"] = prev_crash
+                        diag_payload["prev_crash_count"] = prev_crash_count
+                    
+                    ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
 
-                # pošto publish_to_all ne vraća ok, igramo safe:
-                # - označi kao poslato odmah (da ne spamuje)
-                # - ili, ako želiš retry, ostavi diag_sent False i samo pomeri diag_next_try_ts
-                diag_sent = True
-                diag_clear()
-                diag_set_stage("IDLE")
-            elif now_raw >= diag_next_try_ts:
-                diag_next_try_ts = now_raw + DIAG_RETRY_S
+                    diag_next_try_ts = now_raw + DIAG_RETRY_S
 
-        # --- OTA MQTT keepalive / probe ---
-        if ota_slot and not ota_slot.get("client"):
-            # probaj povremeno da se poveže (da OTA radi i kad nema publish-a)
-            if sta.isconnected() and now_raw >= ota_next_probe_ts:
-                ota_next_probe_ts = now_raw + OTA_PROBE_S
-                if now_raw >= ota_slot["next_retry_ts"]:
-                    print("[OTA] probe connect...")
-                    diag_set_stage("OTA_PROBE_CONNECT")
+                    # Send only once; if publish failed, retry later.
+                    if ok_any:
+                        diag_sent = True
+                        if prev_crash:
+                            pdiag.clear_crash()
+                        diag_set_stage("IDLE")
+
+                elif now_raw >= diag_next_try_ts:
+                    diag_next_try_ts = now_raw + DIAG_RETRY_S
+
+            # --- OTA MQTT keepalive / probe ---
+            if ota_slot and not ota_slot.get("client"):
+                # probaj povremeno da se poveže (da OTA radi i kad nema publish-a)
+                if sta.isconnected() and now_raw >= ota_next_probe_ts:
+                    ota_next_probe_ts = now_raw + OTA_PROBE_S
+                    if now_raw >= ota_slot["next_retry_ts"]:
+                        print("[OTA] probe connect...")
+                        diag_set_stage("OTA_PROBE_CONNECT")
+                        wdt_feed(wdt)
+                        c = mqtt_client.connect_mqtt({"mqtt": ota_slot["cfg"]})
+                        wdt_feed(wdt)
+                        diag_set_stage("IDLE")
+                        if c:
+                            ota_slot["client"] = c
+                            ota_slot["subscribed"] = False
+                            ota_slot["next_retry_ts"] = 0
+                            _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+                        else:
+                            ota_slot["next_retry_ts"] = now_raw + ota_slot.get("cooldown_s", 30)
+
+            # MQTT downlink (OTA)
+            if ota_slot and ota_slot.get("client"):
+                try:
+                    diag_set_stage("OTA_CHECK_MSG")
                     wdt_feed(wdt)
-                    c = mqtt_client.connect_mqtt({"mqtt": ota_slot["cfg"]})
+                    ota_slot["client"].check_msg()
                     wdt_feed(wdt)
                     diag_set_stage("IDLE")
-                    if c:
-                        ota_slot["client"] = c
-                        ota_slot["subscribed"] = False
-                        ota_slot["next_retry_ts"] = 0
-                        _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
-                    else:
-                        ota_slot["next_retry_ts"] = now_raw + ota_slot.get("cooldown_s", 30)
-
-        # MQTT downlink (OTA)
-        if ota_slot and ota_slot.get("client"):
-            try:
-                diag_set_stage("OTA_CHECK_MSG")
-                wdt_feed(wdt)
-                ota_slot["client"].check_msg()
-                wdt_feed(wdt)
-                diag_set_stage("IDLE")
-            except:
-                # ako pukne, pusti da publish/probe ponovo uspostavi
-                diag_set_stage("OTA_CHECK_MSG_FAIL")
-                try:
-                    ota_slot["client"].disconnect()
                 except:
-                    pass
-                ota_slot["client"] = None
-                ota_slot["subscribed"] = False
+                    # ako pukne, pusti da publish/probe ponovo uspostavi
+                    diag_set_stage("OTA_CHECK_MSG_FAIL")
+                    try:
+                        ota_slot["client"].disconnect()
+                    except:
+                        pass
+                    ota_slot["client"] = None
+                    ota_slot["subscribed"] = False
+                    diag_set_stage("IDLE")
+
+            # OTA cycle
+            maintenance = ota_slot["maintenance"] if ota_slot else None
+            handle_ota_cycle(maintenance, config)
+            
+            # ---------------------------
+            # Sensor.Community independent timer
+            # ---------------------------
+            if sc_uploader and sta.isconnected():
+                if (time.time() - boot_ts) >= BOOT_QUIET_S:
+                    if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
+
+                        ok = False
+                        time.sleep_ms(500)
+                        wdt_feed(wdt)
+
+                        if wait_for_network_ready(timeout_seconds=2, wdt=wdt):
+                            print("[SC] timer: ", now_raw - last_sc_ts)
+                            wdt_feed(wdt)
+                            diag_set_stage("SC_SEND")
+                            ok = sc_uploader.send(last_measurement_for_sc)
+                            diag_set_stage("IDLE")
+                        # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
+                        if last_sc_ts == 0:
+                            last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
+                        else:
+                            last_sc_ts += sc_interval_s
+
+                        if ok:
+                            print("[SC] sent")
+                        else:
+                            print("[SC] skipped/failed (send&forget)")
+            elif sc_uploader:
+                # nema WiFi: ne šaljemo, ne pamtimo "za kasnije"
+                pass
+
+            # ---------------------------
+            # Minute sampling
+            # ---------------------------
+            if now - last_minute_ts >= 60:
+                wdt_feed(wdt)
+                diag_set_stage("MEASURE_MINUTE")
+                payload, pm25, pm10 = perform_minute_sampling(
+                    sensor_manager,
+                    samples_per_min,
+                    trim_extremes,
+                    uid,
+                    mqtt_clients,
+                    config,
+                    external_mgr,
+                    now
+                )
+            
                 diag_set_stage("IDLE")
 
-        # OTA cycle
-        maintenance = ota_slot["maintenance"] if ota_slot else None
-        handle_ota_cycle(maintenance, config)
-            
-        # ---------------------------
-        # Sensor.Community independent timer
-        # ---------------------------
-        if sc_uploader and sta.isconnected():
-            if (time.time() - boot_ts) >= BOOT_QUIET_S:
-                if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
+                if pm25 is None and pm10 is None:
+                    sensor_fail_streak += 1
+                    print("[Sensor] fail streak:", sensor_fail_streak)
+                else:
+                    sensor_fail_streak = 0
 
-                    ok = False
-                    time.sleep_ms(500)
+                if sensor_fail_streak >= SENSOR_FAIL_THRESHOLD:
+                    print("[Sensor] reinitializing sensors after failures")
+                    try:
+                        sensors = create_sensors(device_meta)
+                        sensor_manager = SensorManager(sensors)
+                    except Exception as exc:
+                        print("[Sensor] reinit failed:", exc)
+                    sensor_fail_streak = 0            
                     wdt_feed(wdt)
-
-                    if wait_for_network_ready(timeout_seconds=2, wdt=wdt):
-                        print("[SC] timer: ", now_raw - last_sc_ts)
-                        wdt_feed(wdt)
-                        diag_set_stage("SC_SEND")
-                        ok = sc_uploader.send(last_measurement_for_sc)
-                        diag_set_stage("IDLE")
-                    # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
-                    if last_sc_ts == 0:
-                        last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
-                    else:
-                        last_sc_ts += sc_interval_s
-
-                    if ok:
-                        print("[SC] sent")
-                    else:
-                        print("[SC] skipped/failed (send&forget)")
-        elif sc_uploader:
-            # nema WiFi: ne šaljemo, ne pamtimo "za kasnije"
-            pass
-
-        # ---------------------------
-        # Minute sampling
-        # ---------------------------
-        if now - last_minute_ts >= 60:
-            wdt_feed(wdt)
-            diag_set_stage("MEASURE_MINUTE")
-            payload, pm25, pm10 = perform_minute_sampling(
-                sensor_manager,
-                samples_per_min,
-                trim_extremes,
-                uid,
-                mqtt_clients,
-                config,
-                external_mgr,
-                now
-            )
             
-            diag_set_stage("IDLE")
+                # čuvamo poslednje merenje za SC snapshot (normalized)
+                if payload and isinstance(payload, dict) and "data" in payload:
+                    last_measurement_for_sc = payload["data"]
 
-            if pm25 is None and pm10 is None:
-                sensor_fail_streak += 1
-                print("[Sensor] fail streak:", sensor_fail_streak)
-            else:
-                sensor_fail_streak = 0
+                time.sleep_ms(500)
 
-            if sensor_fail_streak >= SENSOR_FAIL_THRESHOLD:
-                print("[Sensor] reinitializing sensors after failures")
-                try:
-                    sensors = create_sensors(device_meta)
-                    sensor_manager = SensorManager(sensors)
-                except Exception as exc:
-                    print("[Sensor] reinit failed:", exc)
-                sensor_fail_streak = 0            
+                # Publish minute to all MQTT brokers
                 wdt_feed(wdt)
-            
-            # čuvamo poslednje merenje za SC snapshot (normalized)
-            if payload and isinstance(payload, dict) and "data" in payload:
-                last_measurement_for_sc = payload["data"]
 
-            time.sleep_ms(500)
+                if (time.time() - boot_ts) < BOOT_QUIET_S:
+                    # skip SC/MQTT early after boot to reduce power spikes
+                    pass
+                else:
+                    diag_set_stage("MQTT_PUBLISH_MINUTE")
+                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
 
-            # Publish minute to all MQTT brokers
-            wdt_feed(wdt)
+                print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
 
-            if (time.time() - boot_ts) < BOOT_QUIET_S:
-                # skip SC/MQTT early after boot to reduce power spikes
-                pass
-            else:
-                diag_set_stage("MQTT_PUBLISH_MINUTE")
-                publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
+                # Aggregation buffer
+                minute_measurements.append(payload["data"])
+                if len(minute_measurements) >= agg_window:
+                    agg = calculate_aggregated(minute_measurements, agg_window)
+                    if agg:
+                        agg_payload = {
+                            "device": uid,
+                            "ts": agg["ts"],
+                            "minutes": agg_window,
+                            "data": agg["data"]
+                        }
+                        diag_set_stage("MQTT_PUBLISH_AGG")
+                        publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg", wdt=wdt)
 
-            print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
+                    minute_measurements = []
 
-            # Aggregation buffer
-            minute_measurements.append(payload["data"])
-            if len(minute_measurements) >= agg_window:
-                agg = calculate_aggregated(minute_measurements, agg_window)
-                if agg:
-                    agg_payload = {
-                        "device": uid,
-                        "ts": agg["ts"],
-                        "minutes": agg_window,
-                        "data": agg["data"]
-                    }
-                    diag_set_stage("MQTT_PUBLISH_AGG")
-                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg", wdt=wdt)
+                last_minute_ts = now
 
-                minute_measurements = []
+            # ---------------------------
+            # FLUSH BUFFERS every 30 sec
+            # ---------------------------
+            if now - last_flush_ts >= 30:
+                diag_set_stage("FLUSH_BUFFERS")
+                wdt_feed(wdt)
+                flush_all_buffers(mqtt_clients, config)
+                wdt_feed(wdt)
+                last_flush_ts = now
+                diag_set_stage("IDLE")
 
-            last_minute_ts = now
+            # Restore LED if needed
+            if led_status.is_off():
+                led_status.restore()
 
-        # ---------------------------
-        # FLUSH BUFFERS every 30 sec
-        # ---------------------------
-        if now - last_flush_ts >= 30:
-            diag_set_stage("FLUSH_BUFFERS")
-            wdt_feed(wdt)
-            flush_all_buffers(mqtt_clients, config)
-            wdt_feed(wdt)
-            last_flush_ts = now
             diag_set_stage("IDLE")
+            time.sleep_ms(300)
+        except Exception as exc:
+            # Record crash to RTC (best-effort). Do not let diagnostics crash the device.
+            try:
+                stage = diag_get_stage()
+                wifi_ok = bool(sta.isconnected()) if 'sta' in locals() else None
+                rssi = sta.status("rssi") if wifi_ok else None
+                ts_now = time.time() + UNIX_EPOCH_OFFSET
+                pdiag.record_crash(exc, stage=stage, ts=ts_now, wifi=wifi_ok, rssi=rssi)
+                _last, _count = pdiag.peek_crash()
+            except Exception:
+                _count = 1
 
-        # Restore LED if needed
-        if led_status.is_off():
-            led_status.restore()
+            # After 3 repeats of the same crash, hard reset the device.
+            if _count >= 3:
+                machine.reset()
 
-        diag_set_stage("IDLE")
-        time.sleep_ms(300)
+            # Avoid tight exception loops
+            time.sleep_ms(300)
 
 
 # ---------------------------------------------------------------------------
@@ -1042,4 +1064,11 @@ try:
     main()
 except Exception as exc:
     print("FATAL ERROR:", exc)
+    # Persist fatal init/runtime exception so it can be reported after reboot.
+    try:
+        stage = diag_get_stage()
+        ts_now = time.time() + UNIX_EPOCH_OFFSET
+        pdiag.record_crash(exc, stage=stage, ts=ts_now, wifi=None, rssi=None)
+    except Exception:
+        pass
     machine.reset()
