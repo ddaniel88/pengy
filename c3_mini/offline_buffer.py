@@ -75,12 +75,24 @@ def _rewrite(items):
         print("offline_buffer rewrite error:", exc)
 
 
+import time
+try:
+    import machine
+except Exception:
+    machine = None
+
+
 def flush_buffer(mqtt_client, config, publish_fn):
     """
-    Prolazimo kroz SVE poruke u fajlu i pokušavamo ponovo.
-    publish_fn mora da bude tvoja funkcija iz mqtt_client.py
-    koja prihvata message_type i može da preskoči ponovno upisivanje.
+    WDT-safe flush:
+    - max messages per cycle
+    - time budget limit
+    - small yield between publishes
     """
+
+    MAX_PER_CYCLE = int(config.get("recovery", {}).get("flush_max_per_cycle", 5) or 5)
+    TIME_BUDGET_MS = int(config.get("recovery", {}).get("flush_time_budget_ms", 2000) or 2000)
+
     items = _load_all()
     if not items:
         return mqtt_client, 0
@@ -91,15 +103,26 @@ def flush_buffer(mqtt_client, config, publish_fn):
     remaining = []
     sent_count = 0
 
+    start_ms = time.ticks_ms()
+
     for item in items:
+
+        # ---- HARD LIMIT 1: time budget ----
+        if time.ticks_diff(time.ticks_ms(), start_ms) > TIME_BUDGET_MS:
+            remaining.append(item)
+            continue
+
+        # ---- HARD LIMIT 2: max per cycle ----
+        if sent_count >= MAX_PER_CYCLE:
+            remaining.append(item)
+            continue
+
         msg_type = item.get("type", "aggregate")
         payload = item.get("payload", "")
 
-        # rekonstruišemo topic po tipu
         if msg_type == "aggregate":
             topic = "{}/{}/agg".format(base_topic, uid)
         else:
-            # ako jednog dana dodaš hourly itd.
             topic = "{}/{}/{}".format(base_topic, uid, msg_type)
 
         mqtt_client, ok, _, _ = publish_fn(
@@ -110,17 +133,26 @@ def flush_buffer(mqtt_client, config, publish_fn):
             False,
             0,
             msg_type,
-            # vrlo bitno: kada flush-ujemo, nećemo ponovo upisivati u fajl
             from_flush=True,
         )
 
         if ok:
             sent_count += 1
         else:
-            # ostaje u fajlu
             remaining.append(item)
 
+        # ---- YIELD to prevent WDT ----
+        try:
+            time.sleep_ms(20)
+        except Exception:
+            pass
+
+    # Dodaj sve neobrađene poruke koje nismo stigli
+    if sent_count < len(items):
+        remaining.extend(items[sent_count:])
+
     _rewrite(remaining)
+
     if sent_count:
         print("offline_buffer: sent", sent_count, "message(s)")
 

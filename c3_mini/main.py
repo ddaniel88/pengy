@@ -459,6 +459,8 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
 
         diag_set_stage("MQTT_PUBLISH_CALL_" + msg_type.upper())
 
+        diag_set_stage("MQTT_BEFORE_PUBLISH_" + msg_type.upper())
+
         client, ok, net_err, did_reconnect = _mqtt_publish_entry(
             entry,
             uid,
@@ -468,6 +470,8 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             msg_type=msg_type,
             from_flush=False
         )
+        
+        diag_set_stage("MQTT_AFTER_PUBLISH_" + msg_type.upper())
         
         ok_any = ok_any or ok
 
@@ -703,6 +707,15 @@ def main():
         import setup
         setup.run_setup_mode()
         return
+    
+    # SAFE MODE after WDT reset: reduce network activity so device can stabilize
+    SAFE_MODE_S = int(config.get("recovery", {}).get("safe_mode_after_wdt_s", 600) or 600)
+    safe_mode_until = 0
+
+    if reset_cause == 3:
+        # WDT reset
+        safe_mode_until = time.time() + SAFE_MODE_S
+        print("[SAFE] WDT reset detected → safe mode for", SAFE_MODE_S, "s")
 
     boot_ts = time.time()
     BOOT_QUIET_S = int(config.get("power", {}).get("boot_quiet_s", 20) or 20)
@@ -796,6 +809,8 @@ def main():
             # WiFi health check (every 10s)
             # ---------------------------
             now_raw = time.time()
+            
+            in_safe_mode = (safe_mode_until and time.time() < safe_mode_until)
         
             if not sta.isconnected():
                 if now_raw >= wifi_next_retry_ts:
@@ -996,8 +1011,11 @@ def main():
                     # skip SC/MQTT early after boot to reduce power spikes
                     pass
                 else:
-                    diag_set_stage("MQTT_PUBLISH_MINUTE")
-                    publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
+                    if not in_safe_mode:
+                        diag_set_stage("MQTT_PUBLISH_MINUTE")
+                        publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
+                    else:
+                        pass
 
                 print("Sent minute (timer:", now - last_minute_ts, ") PM2.5", pm25, "PM10", pm10)
 
@@ -1023,12 +1041,13 @@ def main():
             # FLUSH BUFFERS every 30 sec
             # ---------------------------
             if now - last_flush_ts >= 30:
-                diag_set_stage("FLUSH_BUFFERS")
-                wdt_feed(wdt)
-                flush_all_buffers(mqtt_clients, config)
-                wdt_feed(wdt)
-                last_flush_ts = now
-                diag_set_stage("IDLE")
+                if (not in_safe_mode):
+                    diag_set_stage("FLUSH_BUFFERS")
+                    wdt_feed(wdt)
+                    flush_all_buffers(mqtt_clients, config)
+                    wdt_feed(wdt)
+                    last_flush_ts = now
+                    diag_set_stage("IDLE")
 
             # Restore LED if needed
             if led_status.is_off():

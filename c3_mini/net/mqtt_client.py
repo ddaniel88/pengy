@@ -181,6 +181,21 @@ def publish(
         else:
             try:
                 gc.collect()
+                
+                try:
+                    # Force per-socket timeout (defensive; prevents indefinite block on write/read)
+                    mqtt_cfg = (config or {}).get("mqtt", {})
+                    sock_timeout = int(mqtt_cfg.get("socket_timeout", 5) or 5)
+
+                    # umqtt.simple keeps socket on client.sock
+                    if hasattr(client, "sock") and client.sock:
+                        try:
+                            client.sock.settimeout(sock_timeout)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                
                 client.publish(topic, message, retain=retain, qos=qos)
                 return client, True, False, did_reconnect
 
