@@ -2,6 +2,7 @@
 import time
 import ujson
 import gc
+import socket
 from uploader.base import BaseUploader
 
 try:
@@ -179,6 +180,14 @@ class SensorCommunityUploader(BaseUploader):
             gc.collect()
             body = ujson.dumps(payload)
             gc.collect()
+            
+            # Defensive: prevent SC POST from blocking indefinitely (WDT killer)
+            try:
+                sc_cfg = self.config.get("external", {}).get("sensor_community", {})
+                timeout_s = int(sc_cfg.get("socket_timeout_s", 5) or 5)
+                socket.setdefaulttimeout(timeout_s)
+            except Exception:
+                pass
 
             print("SC POST", x_pin)
             resp = requests.post(self.base_url, headers=headers, data=body)

@@ -695,6 +695,14 @@ def main():
     
     reset_cause = machine.reset_cause()
     last_stage = diag_get_stage()
+    last_stage_name = last_stage.get("stage") if isinstance(last_stage, dict) else None
+
+    last_stage_ms = None
+    try:
+        if isinstance(last_stage, dict) and last_stage.get("ts") is not None:
+            last_stage_ms = int((time.time() - int(last_stage["ts"])) * 1000)
+    except Exception:
+        last_stage_ms = None
     
     diag_set_stage("BOOT_START")
     
@@ -862,7 +870,7 @@ def main():
                         "fw": FIRMWARE_VERSION,
                         "reset_cause": reset_cause,
                         "last_stage": last_stage.get("stage") if last_stage else None,
-                        "last_stage_ms": last_stage.get("t_ms") if last_stage else None,
+                        "last_stage_ms": last_stage_ms,
                         "mem_free": gc.mem_free(),
                         "wifi": sta.isconnected(),
                         "wifi_fail_count": wifi_fail_count,
@@ -946,9 +954,26 @@ def main():
                         if wait_for_network_ready(timeout_seconds=2, wdt=wdt):
                             print("[SC] timer: ", now_raw - last_sc_ts)
                             wdt_feed(wdt)
+
+                            # Defensive: ensure HTTP sockets don't block forever during SC send
+                            try:
+                                sc_timeout = int(config.get("recovery", {}).get("sc_socket_timeout_s", 5) or 5)
+                                socket.setdefaulttimeout(sc_timeout)
+                            except Exception:
+                                pass
+
                             diag_set_stage("SC_SEND")
-                            ok = sc_uploader.send(last_measurement_for_sc)
-                            diag_set_stage("IDLE")
+                            try:
+                                wdt_feed(wdt)
+                                ok = sc_uploader.send(last_measurement_for_sc)
+                                diag_set_stage("SC_AFTER_SEND")
+                            except Exception as exc:
+                                ok = False
+                                diag_set_stage("SC_SEND_FAIL")
+                                print("[SC] send failed:", exc)
+                            finally:
+                                wdt_feed(wdt)
+                                diag_set_stage("IDLE")
                         # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
                         if last_sc_ts == 0:
                             last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw

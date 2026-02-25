@@ -87,7 +87,11 @@ def _rtc_save(obj):
 
 def set_stage(stage: str):
     store = _rtc_load()
-    store[_KEY_STAGE] = {"stage": stage, "t_ms": time.ticks_ms()}
+    store[_KEY_STAGE] = {
+        "stage": stage,
+        "t_ms": time.ticks_ms(),   # ticks in current boot (useful only within same boot)
+        "ts": time.time(),         # epoch seconds (survives reboot; used to compute last_stage_ms)
+    }
     _rtc_save(store)
 
 

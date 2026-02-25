@@ -187,6 +187,11 @@ def publish(
                     mqtt_cfg = (config or {}).get("mqtt", {})
                     sock_timeout = int(mqtt_cfg.get("socket_timeout", 5) or 5)
 
+                    try:
+                        socket.setdefaulttimeout(sock_timeout)
+                    except Exception:
+                        pass
+
                     # umqtt.simple keeps socket on client.sock
                     if hasattr(client, "sock") and client.sock:
                         try:
