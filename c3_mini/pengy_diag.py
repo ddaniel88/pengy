@@ -24,6 +24,7 @@ _KEY_CRASH_LAST = "crash_last"
 _KEY_CRASH_COUNT = "crash_count"
 _KEY_CRASH_KEY = "crash_key"
 _KEY_VER = "v"
+_KEY_NET_LAST = "net_last"
 
 
 def _truncate(s, limit):
@@ -185,3 +186,36 @@ def clear_crash():
     store.pop(_KEY_CRASH_COUNT, None)
     store.pop(_KEY_CRASH_KEY, None)
     _rtc_save(store)
+
+
+def set_net_fail(op: str, errno: int = None):
+    """
+    Record last network failure (best-effort).
+    """
+    try:
+        store = _rtc_load()
+        store[_KEY_NET_LAST] = {
+            "op": op,
+            "errno": errno,
+            "ts": time.time(),
+        }
+        _rtc_save(store)
+    except Exception:
+        pass
+
+
+def get_net_fail():
+    try:
+        store = _rtc_load()
+        return store.get(_KEY_NET_LAST)
+    except Exception:
+        return None
+
+
+def clear_net_fail():
+    try:
+        store = _rtc_load()
+        store.pop(_KEY_NET_LAST, None)
+        _rtc_save(store)
+    except Exception:
+        pass
