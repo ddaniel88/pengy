@@ -685,6 +685,75 @@ def flush_all_buffers(mqtt_clients, config):
 
 
 # ---------------------------------------------------------------------------
+# SC BUILD AVERAGE
+# ---------------------------------------------------------------------------
+
+def _sc_pick(m: dict, keys):
+    """Pick first numeric value; ignore 0.0 (treat as invalid)."""
+    for k in keys:
+        v = m.get(k)
+        if isinstance(v, (int, float)) and v != 0.0:
+            return v
+    return None
+
+def sc_accumulate(acc_sum: dict, acc_cnt: dict, m: dict):
+    """Accumulate canonical fields used by SensorCommunityUploader."""
+    if not m:
+        return
+
+    # PM (canonical keys for your uploader)
+    pm1 = _sc_pick(m, ["pm1", "pm1_0", "pm01"])
+    pm25 = _sc_pick(m, ["pm25", "pm2_5", "pm_2_5"])
+    pm10 = _sc_pick(m, ["pm10", "pm10_0", "pm_10"])
+    pm4 = _sc_pick(m, ["pm4", "pm4_0", "pm_4", "pm_4_0", "pm4.0"])
+
+    # Meteo (common)
+    temp = _sc_pick(m, ["temperature", "temp"])
+    hum = _sc_pick(m, ["humidity", "hum"])
+    pres = _sc_pick(m, ["pressure", "press"])
+
+    def add(key, val):
+        if val is None:
+            return
+        acc_sum[key] = acc_sum.get(key, 0.0) + float(val)
+        acc_cnt[key] = acc_cnt.get(key, 0) + 1
+
+    add("pm1", pm1)
+    add("pm25", pm25)
+    add("pm10", pm10)
+    add("pm4", pm4)
+    add("temperature", temp)
+    add("humidity", hum)
+    add("pressure", pres)
+
+def sc_build_avg(acc_sum: dict, acc_cnt: dict) -> dict:
+    """Return averaged dict (same shape your uploader expects), or None."""
+    if not acc_cnt:
+        return None
+
+    out = {}
+
+    def avg(key):
+        c = acc_cnt.get(key, 0)
+        if c <= 0:
+            return None
+        return acc_sum.get(key, 0.0) / c
+
+    # Only include if present
+    for k in ("pm1", "pm25", "pm10", "pm4", "temperature", "humidity", "pressure"):
+        v = avg(k)
+        if v is not None:
+            out[k] = v
+
+    # If nothing meaningful, skip
+    return out if out else None
+
+def sc_reset(acc_sum: dict, acc_cnt: dict):
+    acc_sum.clear()
+    acc_cnt.clear()
+
+
+# ---------------------------------------------------------------------------
 # MAIN LOOP
 # ---------------------------------------------------------------------------
 
@@ -782,6 +851,20 @@ def main():
     sc_uploader = SensorCommunityUploader(config, device_meta) if sc_enabled else None
     last_sc_ts = 0
     last_measurement_for_sc = None
+    sc_sum = {}
+    sc_cnt = {}
+    sc_pending_avg = None
+    sc_next_retry_ts = 0
+    sc_retry_interval_s = int(sc_cfg.get("retry_interval_seconds", 20) or 20)
+    if sc_retry_interval_s <= 0:
+        sc_retry_interval_s = 20
+    sc_pending_tries = 0
+    try:
+        sc_retry_max = int(sc_cfg.get("retry_max", 2))
+    except Exception:
+        sc_retry_max = 2
+    if sc_retry_max < 0:
+        sc_retry_max = 0
 
     # Status HTTP server
     status_srv = start_status_server()
@@ -1014,27 +1097,34 @@ def main():
             # ---------------------------
             if sc_uploader and sta.isconnected():
                 if (time.time() - boot_ts) >= BOOT_QUIET_S:
-                    if last_measurement_for_sc and (now_raw - last_sc_ts) >= sc_interval_s:
 
+                    if last_sc_ts == 0:
+                        last_sc_ts = now_raw
+
+                    # When window elapsed: freeze averaged payload for sending (once per window)
+                    if sc_pending_avg is None and sc_cnt and (now_raw - last_sc_ts) >= sc_interval_s:
+                        sc_pending_avg = sc_build_avg(sc_sum, sc_cnt)
+                        sc_reset(sc_sum, sc_cnt)  # start collecting next window immediately
+                        sc_next_retry_ts = now_raw  # allow immediate first try
+                        sc_pending_tries = 0
+
+                    # Try send only if we have pending payload AND retry timer elapsed
+                    if sc_pending_avg is not None and now_raw >= sc_next_retry_ts:
                         ok = False
                         time.sleep_ms(500)
                         wdt_feed(wdt)
 
                         if wait_for_network_ready(timeout_seconds=2, wdt=wdt):
-                            print("[SC] timer: ", now_raw - last_sc_ts)
-                            wdt_feed(wdt)
-
-                            # Defensive: ensure HTTP sockets don't block forever during SC send
                             try:
-                                sc_timeout = int(config.get("recovery", {}).get("sc_socket_timeout_s", 5) or 5)
+                                sc_timeout = int(sc_cfg.get("sc_socket_timeout_s", 5) or 5)
                                 socket.setdefaulttimeout(sc_timeout)
                             except Exception:
                                 pass
 
-                            diag_set_stage("SC_SEND")
+                            diag_set_stage("SC_BEFORE_SEND")
                             try:
                                 wdt_feed(wdt)
-                                ok = sc_uploader.send(last_measurement_for_sc)
+                                ok = sc_uploader.send(sc_pending_avg)
                                 diag_set_stage("SC_AFTER_SEND")
                             except Exception as exc:
                                 ok = False
@@ -1043,18 +1133,30 @@ def main():
                             finally:
                                 wdt_feed(wdt)
                                 diag_set_stage("IDLE")
-                        # send & forget: slot potrošen u svakom slučaju (success/fail/no DNS)
-                        if last_sc_ts == 0:
-                            last_sc_ts = last_sc_ts + sc_interval_s if last_sc_ts else now_raw
-                        else:
-                            last_sc_ts += sc_interval_s
 
                         if ok:
                             print("[SC] sent")
+                            sc_pending_avg = None
+
+                            # consume the schedule slot on success
+                            last_sc_ts += sc_interval_s
+                            while (now_raw - last_sc_ts) >= sc_interval_s:
+                                last_sc_ts += sc_interval_s
                         else:
-                            print("[SC] skipped/failed (send&forget)")
+                            sc_pending_tries += 1
+                            if sc_pending_tries > sc_retry_max:
+                                print("[SC] failed (drop pending, move on)")
+                                sc_pending_avg = None
+                                sc_pending_tries = 0
+
+                                # consume the slot even on drop (start a fresh window cadence)
+                                last_sc_ts += sc_interval_s
+                                while (now_raw - last_sc_ts) >= sc_interval_s:
+                                    last_sc_ts += sc_interval_s
+                            else:
+                                print("[SC] failed (will retry)")
+                                sc_next_retry_ts = now_raw + sc_retry_interval_s
             elif sc_uploader:
-                # nema WiFi: ne šaljemo, ne pamtimo "za kasnije"
                 pass
 
             # ---------------------------
@@ -1095,6 +1197,9 @@ def main():
                 # čuvamo poslednje merenje za SC snapshot (normalized)
                 if payload and isinstance(payload, dict) and "data" in payload:
                     last_measurement_for_sc = payload["data"]
+                
+                if sc_uploader and last_measurement_for_sc:
+                    sc_accumulate(sc_sum, sc_cnt, last_measurement_for_sc)
 
                 time.sleep_ms(500)
 

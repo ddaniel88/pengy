@@ -62,9 +62,12 @@
         "sensor_community": {
             "enabled": true,
             "base_url": "https://api.sensor.community/v1/push-sensor-data/",
-            "sensor_id": "esp32-9eaba9a4",
+            "sensor_id": "esp32-0e0408e8",
             "interval_seconds": 145,
-            "software_version": "pengy-wifi-1.0"
+            "software_version": "pengy-wifi-1.0",
+			"retry_interval_seconds": 20,
+			"sc_socket_timeout_s": 5,
+			"retry_max": 2
         },
         "pengy_api": {
             "enabled": false,
@@ -89,4 +92,3 @@
 		"ota_token": "*****"
     }
 }
-
