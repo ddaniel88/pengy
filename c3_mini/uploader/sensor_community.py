@@ -105,8 +105,16 @@ class SensorCommunityUploader(BaseUploader):
             or data.get("pm10_0")
             or data.get("pm_10")
         )
+        pm4 = (
+            data.get("pm4")
+            or data.get("pm04")
+            or data.get("pm4_0")
+            or data.get("pm_4")
+            or data.get("pm_4_0")
+            or data.get("pm4.0")
+        )
 
-        if pm1 is None and pm25 is None and pm10 is None:
+        if pm1 is None and pm25 is None and pm10 is None and pm4 is None:
             return False
 
         payload = {
@@ -121,6 +129,8 @@ class SensorCommunityUploader(BaseUploader):
             payload["sensordatavalues"].append({"value_type": "P2", "value": str(round(pm25, 2))})
         if pm10 is not None:
             payload["sensordatavalues"].append({"value_type": "P1", "value": str(round(pm10, 2))})
+        if pm4 is not None:
+            payload["sensordatavalues"].append({"value_type": "P4", "value": str(round(pm4, 2))})
 
         if not payload["sensordatavalues"]:
             return False

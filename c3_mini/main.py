@@ -770,7 +770,12 @@ def main():
     # Sensor.Community (independent timer)
     sc_cfg = config.get("external", {}).get("sensor_community", {})
     sc_enabled = bool(sc_cfg.get("enabled", False))
-    sc_interval_s = int(sc_cfg.get("interval_seconds", 145) or 145)
+    try:
+        sc_interval_s = int(sc_cfg.get("interval_seconds", 145))
+    except Exception:
+        sc_interval_s = 145
+    if sc_interval_s <= 0:
+        sc_interval_s = 145
     sc_uploader = SensorCommunityUploader(config, device_meta) if sc_enabled else None
     last_sc_ts = 0
     last_measurement_for_sc = None
