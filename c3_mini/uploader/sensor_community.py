@@ -9,6 +9,11 @@ try:
     import urequests as requests
 except ImportError:
     requests = None
+    
+try:
+    import pengy_diag as pdiag
+except Exception:
+    pdiag = None
 
 
 class SensorCommunityUploader(BaseUploader):
@@ -219,6 +224,14 @@ class SensorCommunityUploader(BaseUploader):
 
         except Exception as exc:
             print("SC post error:", exc)
+            
+            try:
+                if pdiag and isinstance(exc, OSError):
+                    errno = exc.args[0] if hasattr(exc, "args") and exc.args else None
+                    pdiag.set_net_fail("sc_post:" + str(x_pin), errno)
+            except Exception:
+                pass
+            
             return False
 
         finally:

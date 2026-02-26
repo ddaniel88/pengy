@@ -9,6 +9,11 @@ from umqtt.simple import MQTTClient
 
 import offline_buffer
 
+try:
+    import pengy_diag as pdiag
+except Exception:
+    pdiag = None
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -206,6 +211,12 @@ def publish(
 
             except Exception as exc:
                 print("MQTT publish failed:", exc)
+                
+                if pdiag and isinstance(exc, OSError):
+                    try:
+                        pdiag.set_net_fail("mqtt_publish:" + str(message_type), _errno(exc))
+                    except Exception:
+                        pass
 
                 if _is_network_error(exc):
                     last_network_error = True

@@ -715,6 +715,9 @@ def main():
         import setup
         setup.run_setup_mode()
         return
+        
+    periodic_diag_last_ts = 0
+    PERIODIC_DIAG_S = int(config.get("recovery", {}).get("periodic_diag_s", 600) or 600)  # 10 min
     
     # SAFE MODE after WDT reset: reduce network activity so device can stabilize
     SAFE_MODE_S = int(config.get("recovery", {}).get("safe_mode_after_wdt_s", 600) or 600)
@@ -869,6 +872,13 @@ def main():
                 if (time.time() - boot_ts) >= BOOT_QUIET_S and sta.isconnected() and now_raw >= diag_next_try_ts:
                     diag_set_stage("MQTT_PUBLISH_DIAG")
                     prev_crash, prev_crash_count = pdiag.peek_crash()
+                    
+                    net_fail = None
+                    try:
+                        net_fail = pdiag.get_net_fail()
+                    except Exception:
+                        net_fail = None
+                    
                     diag_payload = {
                         "device": uid,
                         "ts": now,
@@ -880,7 +890,10 @@ def main():
                         "wifi": sta.isconnected(),
                         "wifi_fail_count": wifi_fail_count,
                         "rssi": sta.status("rssi") if sta.isconnected() else None,
-                        "uptime_ms": time.ticks_ms()
+                        "uptime_ms": time.ticks_ms(),
+                        "net_op": net_fail.get("op") if net_fail else None,
+                        "net_errno": net_fail.get("errno") if net_fail else None,
+                        "kind": "boot"
                     }
                     
                     # Include prev_crash only if it exists (avoid payload noise)
@@ -897,10 +910,61 @@ def main():
                         diag_sent = True
                         if prev_crash:
                             pdiag.clear_crash()
+                            
+                        try:
+                            pdiag.clear_net_fail()
+                        except Exception:
+                            pass
                         diag_set_stage("IDLE")
 
                 elif now_raw >= diag_next_try_ts:
                     diag_next_try_ts = now_raw + DIAG_RETRY_S
+            
+            # ---------------------------
+            # PERIODIC DIAG (every N seconds, and ASAP when net_fail exists)
+            # ---------------------------
+            try:
+                net_fail = pdiag.get_net_fail()
+            except Exception:
+                net_fail = None
+
+            should_send_periodic = False
+
+            if sta.isconnected() and (time.time() - boot_ts) >= BOOT_QUIET_S and (not in_safe_mode):
+                if net_fail:
+                    # send soon after a network failure to capture errno/op without waiting for reboot
+                    should_send_periodic = True
+                elif periodic_diag_last_ts == 0:
+                    periodic_diag_last_ts = now_raw
+                elif (now_raw - periodic_diag_last_ts) >= PERIODIC_DIAG_S:
+                    should_send_periodic = True
+
+            if should_send_periodic:
+                diag_set_stage("MQTT_PUBLISH_DIAG_PERIODIC")
+                diag_payload = {
+                    "device": uid,
+                    "ts": now,
+                    "fw": FIRMWARE_VERSION,
+                    "mem_free": gc.mem_free(),
+                    "wifi": sta.isconnected(),
+                    "wifi_fail_count": wifi_fail_count,
+                    "rssi": sta.status("rssi") if sta.isconnected() else None,
+                    "uptime_ms": time.ticks_ms(),
+                    "net_op": net_fail.get("op") if net_fail else None,
+                    "net_errno": net_fail.get("errno") if net_fail else None,
+                    "kind": "periodic",
+                    "reset_cause_last": reset_cause
+                }
+
+                ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
+
+                periodic_diag_last_ts = now_raw
+                if ok_any and net_fail:
+                    try:
+                        pdiag.clear_net_fail()
+                    except Exception:
+                        pass
+                diag_set_stage("IDLE")
 
             # --- OTA MQTT keepalive / probe ---
             if ota_slot and not ota_slot.get("client"):
