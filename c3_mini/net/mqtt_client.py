@@ -14,6 +14,14 @@ try:
 except Exception:
     pdiag = None
 
+def _stage(name):
+    # Best-effort stage marker for MQTT crash forensics.
+    if not pdiag:
+        return
+    try:
+        pdiag.set_stage(name)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,10 +119,13 @@ def connect_mqtt(config):
     if isinstance(password, str):
         password = password.encode()
 
+    _stage("MQTT_CONN_CFG")
     print("MQTT connecting →", host, "port:", port, "TLS:", use_tls)
 
-    # DNS warmup (kratko)
+    # DNS warmup (short)
+    _stage("MQTT_CONN_DNS_WARMUP_BEGIN")
     _dns_warmup(host, port, tries=3)
+    _stage("MQTT_CONN_DNS_WARMUP_DONE")
 
     for attempt in range(1, connect_retries + 1):
         client = MQTTClient(
@@ -128,11 +139,14 @@ def connect_mqtt(config):
         )
 
         try:
+            _stage("MQTT_CONN_CONNECT_BEGIN_A{}".format(attempt))
             client.connect()
+            _stage("MQTT_CONN_CONNECT_OK_A{}".format(attempt))
             print("MQTT connected.")
             return client
 
         except Exception as exc:
+            _stage("MQTT_CONN_CONNECT_FAIL_A{}".format(attempt))
             print("MQTT connect failed (attempt", attempt, "):", type(exc), getattr(exc, "args", exc))
             if _is_network_not_ready(exc):
                 _wifi_kick()
@@ -177,7 +191,10 @@ def publish(
 
     # keep this short; caller (main loop) controls cadence/cooldown
     for _ in range(2):
+        _stage("MQTT_PUB_ENTER_" + str(message_type))
+
         if not client:
+            _stage("MQTT_PUB_NEED_CONNECT_" + str(message_type))
             client = connect_mqtt(config)
             did_reconnect = bool(client)
 
@@ -206,10 +223,13 @@ def publish(
                 except Exception:
                     pass
                 
+                _stage("MQTT_PUB_CALL_BEGIN_" + str(message_type))
                 client.publish(topic, message, retain=retain, qos=qos)
+                _stage("MQTT_PUB_CALL_OK_" + str(message_type))
                 return client, True, False, did_reconnect
 
             except Exception as exc:
+                _stage("MQTT_PUB_CALL_EXC_" + str(message_type))
                 print("MQTT publish failed:", exc)
                 
                 if pdiag and isinstance(exc, OSError):

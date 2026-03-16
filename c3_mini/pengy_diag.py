@@ -91,7 +91,7 @@ def set_stage(stage: str):
     store[_KEY_STAGE] = {
         "stage": stage,
         "t_ms": time.ticks_ms(),   # ticks in current boot (useful only within same boot)
-        "ts": time.time(),         # epoch seconds (survives reboot; used to compute last_stage_ms)
+        "ts": int(time.time()),    # epoch seconds for cross-boot stage age calculation
     }
     _rtc_save(store)
 

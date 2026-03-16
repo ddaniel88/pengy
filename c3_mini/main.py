@@ -367,6 +367,7 @@ def flush_minute_ram(mqtt_client_instance, cfg):
 
     still = []
     for topic, payload in minute_ram_buffer:
+        diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_BEGIN")
         mqtt_client_instance, ok, net_err, _ = mqtt_client.publish(
             mqtt_client_instance,
             {"mqtt": cfg},
@@ -376,6 +377,13 @@ def flush_minute_ram(mqtt_client_instance, cfg):
             message_type="minute",
             from_flush=True,
         )
+        if ok:
+            diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_OK")
+        elif net_err:
+            diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_NET_ERR")
+        else:
+            diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_FAIL")
+
         if not ok and net_err:
             still.append((topic, payload))
 
@@ -672,6 +680,7 @@ def flush_all_buffers(mqtt_clients, config):
         cfg = entry["cfg"]
 
         # file buffer flush
+        diag_set_stage("FLUSH_FILE_BUFFER_BEGIN")
         client = entry["client"]
         client, _ = offline_buffer.flush_buffer(
             client,
@@ -679,9 +688,12 @@ def flush_all_buffers(mqtt_clients, config):
             mqtt_client.publish,
         )
         entry["client"] = client
+        diag_set_stage("FLUSH_FILE_BUFFER_DONE")
 
         # RAM minute flush (ako ga koristiš)
+        diag_set_stage("FLUSH_RAM_MINUTE_BEGIN")
         entry["client"] = flush_minute_ram(entry["client"], cfg)
+        diag_set_stage("FLUSH_RAM_MINUTE_DONE")
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +781,13 @@ def main():
     last_stage_ms = None
     try:
         if isinstance(last_stage, dict) and last_stage.get("ts") is not None:
-            last_stage_ms = int((time.time() - int(last_stage["ts"])) * 1000)
+            delta_ms = int((time.time() - int(last_stage["ts"])) * 1000)
+
+            # Guard against invalid clock jumps after reboot.
+            if 0 <= delta_ms <= 7 * 24 * 60 * 60 * 1000:
+                last_stage_ms = delta_ms
+            else:
+                last_stage_ms = None
     except Exception:
         last_stage_ms = None
     
@@ -1121,11 +1139,15 @@ def main():
                             except Exception:
                                 pass
 
-                            diag_set_stage("SC_BEFORE_SEND")
+                            diag_set_stage("SC_SEND_ENTER")
                             try:
                                 wdt_feed(wdt)
+                                diag_set_stage("SC_BEFORE_SEND")
                                 ok = sc_uploader.send(sc_pending_avg)
-                                diag_set_stage("SC_AFTER_SEND")
+                                if ok:
+                                    diag_set_stage("SC_AFTER_SEND_OK")
+                                else:
+                                    diag_set_stage("SC_AFTER_SEND_FALSE")
                             except Exception as exc:
                                 ok = False
                                 diag_set_stage("SC_SEND_FAIL")
@@ -1241,11 +1263,12 @@ def main():
             # ---------------------------
             if now - last_flush_ts >= 30:
                 if (not in_safe_mode):
-                    diag_set_stage("FLUSH_BUFFERS")
+                    diag_set_stage("FLUSH_BUFFERS_BEGIN")
                     wdt_feed(wdt)
                     flush_all_buffers(mqtt_clients, config)
                     wdt_feed(wdt)
                     last_flush_ts = now
+                    diag_set_stage("FLUSH_BUFFERS_DONE")
                     diag_set_stage("IDLE")
 
             # Restore LED if needed

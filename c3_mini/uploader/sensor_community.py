@@ -15,6 +15,15 @@ try:
 except Exception:
     pdiag = None
 
+def _stage(name):
+    # Best-effort stage marker for SC crash forensics.
+    if not pdiag:
+        return
+    try:
+        pdiag.set_stage(name)
+    except Exception:
+        pass
+    
 
 class SensorCommunityUploader(BaseUploader):
     """
@@ -192,21 +201,27 @@ class SensorCommunityUploader(BaseUploader):
 
         resp = None
         try:
+            _stage("SC_POST_BEGIN_" + str(x_pin))
             gc.collect()
             body = ujson.dumps(payload)
             gc.collect()
+            _stage("SC_POST_BODY_READY_" + str(x_pin))
             
             # Defensive: prevent SC POST from blocking indefinitely (WDT killer)
             try:
+                _stage("SC_POST_TIMEOUT_CFG_" + str(x_pin))
                 sc_cfg = self.config.get("external", {}).get("sensor_community", {})
                 timeout_s = int(sc_cfg.get("socket_timeout_s", 5) or 5)
                 socket.setdefaulttimeout(timeout_s)
             except Exception:
                 pass
 
+            _stage("SC_POST_CALL_BEGIN_" + str(x_pin))
             print("SC POST", x_pin)
             resp = requests.post(self.base_url, headers=headers, data=body)
+            _stage("SC_POST_CALL_OK_" + str(x_pin))
             code = getattr(resp, "status_code", None)
+            _stage("SC_POST_STATUS_" + str(x_pin) + "_" + str(code))
             print("SC RESP:", code)
 
             if code == 403:
@@ -216,13 +231,16 @@ class SensorCommunityUploader(BaseUploader):
             ok = (code == 201) or (code == 200)
 
             try:
+                _stage("SC_POST_CLOSE_BEGIN_" + str(x_pin))
                 resp.close()
+                _stage("SC_POST_CLOSE_OK_" + str(x_pin))
             except:
                 pass
 
             return ok
 
         except Exception as exc:
+            _stage("SC_POST_EXC_" + str(x_pin))
             print("SC post error:", exc)
             
             try:
@@ -237,7 +255,9 @@ class SensorCommunityUploader(BaseUploader):
         finally:
             if resp:
                 try:
+                    _stage("SC_POST_FINALLY_CLOSE_BEGIN_" + str(x_pin))
                     resp.close()
+                    _stage("SC_POST_FINALLY_CLOSE_OK_" + str(x_pin))
                 except:
                     pass
             gc.collect()
