@@ -127,6 +127,7 @@ def wait_for_network_ready(timeout_seconds: int = 30, wdt=None) -> bool:
     while time.ticks_diff(time.ticks_ms(), start) < timeout_seconds * 1000:
         wdt_feed(wdt)
         if not sta.isconnected():
+            diag_set_stage("SLEEP_MS_NW-")
             time.sleep_ms(300)
             continue
 
@@ -139,6 +140,7 @@ def wait_for_network_ready(timeout_seconds: int = 30, wdt=None) -> bool:
             except OSError:
                 pass
 
+        diag_set_stage("SLEEP_MS_NW")
         time.sleep_ms(400)
 
     return False
@@ -230,6 +232,7 @@ def connect_wifi(ssid: str, password: str, timeout_seconds: int = 20, wdt=None):
         start = time.time()
         while not sta.isconnected() and (time.time() - start) < timeout_seconds:
             wdt_feed(wdt)
+            diag_set_stage("SLEEP_MS_CN")
             time.sleep(1)
 
     return sta, sta.isconnected()
@@ -266,6 +269,7 @@ def ensure_wifi_connected(wifi_cfg, sta, wdt=None) -> bool:
     start = time.time()
     while not sta.isconnected() and (time.time() - start) < 8:
         wdt_feed(wdt)
+        diag_set_stage("SLEEP_MS_WF")
         time.sleep_ms(250)
 
     ok = sta.isconnected()
@@ -456,6 +460,7 @@ def init_mqtt_clients(config, sensor_manager, uid):
 # ---------------------------------------------------------------------------
 
 def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type, wdt=None):
+    diag_set_stage("MQTT_PREPARE_" + msg_type.upper())
     payload = ujson.dumps(payload_dict)
     ok_any = False  # True if at least one broker publish succeeded
 
@@ -494,6 +499,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             if did_reconnect:
                 ota_slot["subscribed"] = False
             _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+    diag_set_stage("MQTT_DONE_" + msg_type.upper())
     return ok_any
 
 
@@ -502,13 +508,16 @@ def _mqtt_publish_entry(entry, uid, topic, payload, retain, msg_type, from_flush
     entry: dict {cfg, client, next_retry_ts, cooldown_s}
     Vraca updated client i ok flag.
     """
+    diag_set_stage("MQTT_ENTRY_" + msg_type.upper())
     sta = network.WLAN(network.STA_IF)
     if not sta.isconnected():
+        diag_set_stage("MQTT_WIFI_DISCONNECTED")
         return entry["client"], False, False, False
     
     now = time.time()
 
     if entry["next_retry_ts"] and now < entry["next_retry_ts"]:
+        diag_set_stage("MQTT_COOLDOWN_SKIP")
         return entry["client"], False, False, False
 
     client, ok, net_err, did_reconnect = mqtt_client.publish(
@@ -523,6 +532,13 @@ def _mqtt_publish_entry(entry, uid, topic, payload, retain, msg_type, from_flush
 
     entry["client"] = client
 
+    if ok:
+        diag_set_stage("MQTT_RESULT_OK_" + msg_type.upper())
+    elif net_err:
+        diag_set_stage("MQTT_RESULT_NET_ERR_" + msg_type.upper())
+    else:
+        diag_set_stage("MQTT_RESULT_FAIL_" + msg_type.upper())
+    
     if net_err:
         entry["next_retry_ts"] = now + entry.get("cooldown_s", 15)
     else:
@@ -921,6 +937,8 @@ def main():
         try:
             # WDT feed (keep this very early)
             wdt_feed(wdt)
+            
+            diag_set_stage("MAIN_LOOP_TICK")
 
             # ---------------------------
             # WiFi health check (every 10s)
@@ -960,10 +978,12 @@ def main():
             now = now_raw + UNIX_EPOCH_OFFSET
 
             # WiFi LED status
+            diag_set_stage("LED_STATUS_TICK")
             led_status.set_wifi_fail_mode(not sta.isconnected())
             led_status.tick()
 
             # Handle HTTP status server
+            diag_set_stage("STATUS_SERVER_HANDLE")
             handle_status_request(status_srv)
         
             # ---------------------------
@@ -1032,11 +1052,11 @@ def main():
             should_send_periodic = False
 
             if sta.isconnected() and (time.time() - boot_ts) >= BOOT_QUIET_S and (not in_safe_mode):
-                if net_fail:
-                    # send soon after a network failure to capture errno/op without waiting for reboot
-                    should_send_periodic = True
-                elif periodic_diag_last_ts == 0:
+                if periodic_diag_last_ts == 0:
                     periodic_diag_last_ts = now_raw
+                elif net_fail and (now_raw - periodic_diag_last_ts) >= 30:
+                    # send soon after a network failure, but do not spam every loop
+                    should_send_periodic = True
                 elif (now_raw - periodic_diag_last_ts) >= PERIODIC_DIAG_S:
                     should_send_periodic = True
 
@@ -1090,10 +1110,11 @@ def main():
             # MQTT downlink (OTA)
             if ota_slot and ota_slot.get("client"):
                 try:
-                    diag_set_stage("OTA_CHECK_MSG")
+                    diag_set_stage("OTA_CHECK_MSG_BEGIN")
                     wdt_feed(wdt)
                     ota_slot["client"].check_msg()
                     wdt_feed(wdt)
+                    diag_set_stage("OTA_CHECK_MSG_OK")
                     diag_set_stage("IDLE")
                 except:
                     # ako pukne, pusti da publish/probe ponovo uspostavi
@@ -1108,7 +1129,9 @@ def main():
 
             # OTA cycle
             maintenance = ota_slot["maintenance"] if ota_slot else None
+            diag_set_stage("OTA_CYCLE")
             handle_ota_cycle(maintenance, config)
+            diag_set_stage("IDLE")
             
             # ---------------------------
             # Sensor.Community independent timer
@@ -1120,6 +1143,7 @@ def main():
                         last_sc_ts = now_raw
 
                     # When window elapsed: freeze averaged payload for sending (once per window)
+                    diag_set_stage("SC_SCHED_CHECK")
                     if sc_pending_avg is None and sc_cnt and (now_raw - last_sc_ts) >= sc_interval_s:
                         sc_pending_avg = sc_build_avg(sc_sum, sc_cnt)
                         sc_reset(sc_sum, sc_cnt)  # start collecting next window immediately
@@ -1129,6 +1153,7 @@ def main():
                     # Try send only if we have pending payload AND retry timer elapsed
                     if sc_pending_avg is not None and now_raw >= sc_next_retry_ts:
                         ok = False
+                        diag_set_stage("SLEEP_MS_SC")
                         time.sleep_ms(500)
                         wdt_feed(wdt)
 
@@ -1223,6 +1248,7 @@ def main():
                 if sc_uploader and last_measurement_for_sc:
                     sc_accumulate(sc_sum, sc_cnt, last_measurement_for_sc)
 
+                diag_set_stage("SLEEP_MS_500")
                 time.sleep_ms(500)
 
                 # Publish minute to all MQTT brokers
@@ -1244,7 +1270,7 @@ def main():
                 minute_measurements.append(payload["data"])
                 if len(minute_measurements) >= agg_window:
                     agg = calculate_aggregated(minute_measurements, agg_window)
-                    if agg:
+                    if agg and (not in_safe_mode):
                         agg_payload = {
                             "device": uid,
                             "ts": agg["ts"],
@@ -1276,6 +1302,7 @@ def main():
                 led_status.restore()
 
             diag_set_stage("IDLE")
+            diag_set_stage("MAIN_SLEEP_300")
             time.sleep_ms(300)
         except Exception as exc:
             # Record crash to RTC (best-effort). Do not let diagnostics crash the device.
@@ -1294,6 +1321,7 @@ def main():
                 machine.reset()
 
             # Avoid tight exception loops
+            diag_set_stage("SLEEP_MS")
             time.sleep_ms(300)
 
 
