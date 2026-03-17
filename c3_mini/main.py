@@ -461,7 +461,9 @@ def init_mqtt_clients(config, sensor_manager, uid):
 
 def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_dict, msg_type, wdt=None):
     diag_set_stage("MQTT_PREPARE_" + msg_type.upper())
+    diag_set_stage("MQTT_JSON_BEGIN_" + msg_type.upper())
     payload = ujson.dumps(payload_dict)
+    diag_set_stage("MQTT_JSON_OK_" + msg_type.upper())
     ok_any = False  # True if at least one broker publish succeeded
 
     for entry in mqtt_clients:
@@ -485,6 +487,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
         )
         
         diag_set_stage("MQTT_AFTER_PUBLISH_" + msg_type.upper())
+        diag_set_stage("MQTT_AFTER_PUBLISH_BEFORE_LOOP_" + msg_type.upper())
         
         ok_any = ok_any or ok
 
@@ -499,6 +502,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
             if did_reconnect:
                 ota_slot["subscribed"] = False
             _ensure_ota_subscribed(ota_slot, config, sensor_manager, uid)
+    diag_set_stage("MQTT_AFTER_ALL_" + msg_type.upper())
     diag_set_stage("MQTT_DONE_" + msg_type.upper())
     return ok_any
 
@@ -1008,6 +1012,7 @@ def main():
                         "last_stage": last_stage.get("stage") if last_stage else None,
                         "last_stage_ms": last_stage_ms,
                         "mem_free": gc.mem_free(),
+                        "mem_alloc": gc.mem_alloc(),
                         "wifi": sta.isconnected(),
                         "wifi_fail_count": wifi_fail_count,
                         "rssi": sta.status("rssi") if sta.isconnected() else None,
@@ -1023,7 +1028,7 @@ def main():
                         diag_payload["prev_crash_count"] = prev_crash_count
                     
                     ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
-
+                    diag_set_stage("BOOT_DIAG_PUBLISH_RETURNED")
                     diag_next_try_ts = now_raw + DIAG_RETRY_S
 
                     # Send only once; if publish failed, retry later.
@@ -1078,6 +1083,7 @@ def main():
                 }
 
                 ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
+                diag_set_stage("PERIODIC_DIAG_PUBLISH_RETURNED")
 
                 periodic_diag_last_ts = now_raw
                 if ok_any and net_fail:
@@ -1261,6 +1267,7 @@ def main():
                     if not in_safe_mode:
                         diag_set_stage("MQTT_PUBLISH_MINUTE")
                         publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
+                        diag_set_stage("MINUTE_PUBLISH_RETURNED")
                     else:
                         pass
 
@@ -1279,6 +1286,7 @@ def main():
                         }
                         diag_set_stage("MQTT_PUBLISH_AGG")
                         publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, agg_payload, "agg", wdt=wdt)
+                        diag_set_stage("AGG_PUBLISH_RETURNED")
 
                     minute_measurements = []
 

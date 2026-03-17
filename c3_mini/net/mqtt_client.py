@@ -202,7 +202,9 @@ def publish(
             last_network_error = True
         else:
             try:
+                _stage("MQTT_BEFORE_GC")
                 gc.collect()
+                _stage("MQTT_AFTER_GC")
                 
                 try:
                     # Force per-socket timeout (defensive; prevents indefinite block on write/read)
