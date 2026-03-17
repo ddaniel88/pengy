@@ -23,6 +23,78 @@ def _stage(name):
         pdiag.set_stage(name)
     except Exception:
         pass
+
+def _is_oserror(exc):
+    return isinstance(exc, OSError)
+
+def _errno(exc):
+    try:
+        if hasattr(exc, "args") and exc.args:
+            return exc.args[0]
+    except Exception:
+        pass
+    return None
+
+def _is_network_not_ready(exc):
+    # ESP32 often raises OSError(-202) while WiFi says "connected"
+    return _is_oserror(exc) and _errno(exc) == -202
+
+def _wifi_kick():
+    try:
+        import network
+        sta = network.WLAN(network.STA_IF)
+        if sta.active():
+            try:
+                sta.disconnect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _tcp_probe(url: str, timeout_s=2):
+    """
+    Quick TCP probe before entering requests.post().
+    Helps avoid hard hangs inside HTTP/socket path.
+    """
+    s = None
+    try:
+        target = url
+        if target.startswith("https://"):
+            target = target[len("https://"):]
+            default_port = 443
+        elif target.startswith("http://"):
+            target = target[len("http://"):]
+            default_port = 80
+        else:
+            default_port = 80
+
+        host = target.split("/", 1)[0]
+        if ":" in host:
+            host, port_txt = host.split(":", 1)
+            port = int(port_txt)
+        else:
+            port = default_port
+
+        addr = socket.getaddrinfo(host, port)[0][-1]
+        s = socket.socket()
+        try:
+            s.settimeout(timeout_s)
+        except Exception:
+            pass
+        s.connect(addr)
+        return True
+    except OSError as exc:
+        if _is_network_not_ready(exc):
+            _wifi_kick()
+        return False
+    except Exception:
+        return False
+    finally:
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
     
 
 class SensorCommunityUploader(BaseUploader):
@@ -214,11 +286,23 @@ class SensorCommunityUploader(BaseUploader):
                 timeout_s = int(sc_cfg.get("socket_timeout_s", 5) or 5)
                 socket.setdefaulttimeout(timeout_s)
             except Exception:
-                pass
+                timeout_s = 5
+
+            _stage("SC_POST_TCP_PROBE_BEGIN_" + str(x_pin))
+            if not _tcp_probe(self.base_url, timeout_s=min(timeout_s, 2)):
+                _stage("SC_POST_TCP_PROBE_FAIL_" + str(x_pin))
+                try:
+                    if pdiag:
+                        pdiag.set_net_fail("sc_tcp_probe:" + str(x_pin), 113)
+                except Exception:
+                    pass
+                return False
+            _stage("SC_POST_TCP_PROBE_OK_" + str(x_pin))
 
             _stage("SC_POST_CALL_BEGIN_" + str(x_pin))
             print("SC POST", x_pin)
             resp = requests.post(self.base_url, headers=headers, data=body)
+            
             _stage("SC_POST_CALL_OK_" + str(x_pin))
             code = getattr(resp, "status_code", None)
             _stage("SC_POST_STATUS_" + str(x_pin) + "_" + str(code))
@@ -247,6 +331,8 @@ class SensorCommunityUploader(BaseUploader):
                 if pdiag and isinstance(exc, OSError):
                     errno = exc.args[0] if hasattr(exc, "args") and exc.args else None
                     pdiag.set_net_fail("sc_post:" + str(x_pin), errno)
+                    if _is_network_not_ready(exc):
+                        _wifi_kick()
             except Exception:
                 pass
             
@@ -261,3 +347,4 @@ class SensorCommunityUploader(BaseUploader):
                 except:
                     pass
             gc.collect()
+            _stage("SC_POST_FINALLY_DONE_" + str(x_pin))

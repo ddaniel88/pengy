@@ -81,6 +81,34 @@ def _dns_warmup(host, port, tries=3, max_backoff_ms=1500):
     return False
 
 
+def _tcp_probe(host, port, timeout_s=2):
+    """
+    Quick TCP probe before entering umqtt.connect().
+    Helps avoid hard hangs inside socket/MQTT connect path.
+    """
+    s = None
+    try:
+        addr = socket.getaddrinfo(host, port)[0][-1]
+        s = socket.socket()
+        try:
+            s.settimeout(timeout_s)
+        except Exception:
+            pass
+        s.connect(addr)
+        return True
+    except OSError as exc:
+        if _is_network_not_ready(exc):
+            _wifi_kick()
+        return False
+    except Exception:
+        return False
+    finally:
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
+
 # ---------------------------------------------------------------------------
 # Connect
 
@@ -127,6 +155,12 @@ def connect_mqtt(config):
     _dns_warmup(host, port, tries=3)
     _stage("MQTT_CONN_DNS_WARMUP_DONE")
 
+    _stage("MQTT_CONN_TCP_PROBE_BEGIN")
+    if not _tcp_probe(host, port, timeout_s=min(sock_timeout, 2)):
+        _stage("MQTT_CONN_TCP_PROBE_FAIL")
+        return None
+    _stage("MQTT_CONN_TCP_PROBE_OK")
+
     for attempt in range(1, connect_retries + 1):
         client = MQTTClient(
             client_id=client_id,
@@ -150,13 +184,26 @@ def connect_mqtt(config):
             print("MQTT connect failed (attempt", attempt, "):", type(exc), getattr(exc, "args", exc))
             if _is_network_not_ready(exc):
                 _wifi_kick()
+
+            try:
+                if hasattr(client, "sock") and client.sock:
+                    try:
+                        client.sock.close()
+                    except Exception:
+                        pass
+                    client.sock = None
+            except Exception:
+                pass
+
             try:
                 client.disconnect()
             except Exception:
                 pass
+
             gc.collect()
             time.sleep_ms(backoff_ms)
-
+            
+    _stage("MQTT_CONN_GIVE_UP")
     return None
 
 
@@ -245,9 +292,20 @@ def publish(
                     if _is_network_not_ready(exc):
                         _wifi_kick()
                     try:
+                        if hasattr(client, "sock") and client.sock:
+                            try:
+                                client.sock.close()
+                            except Exception:
+                                pass
+                            client.sock = None
+                    except Exception:
+                        pass
+
+                    try:
                         client.disconnect()
                     except Exception:
                         pass
+
                     client = None
                 else:
                     return client, False, False, did_reconnect
