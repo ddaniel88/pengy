@@ -29,7 +29,7 @@ except ImportError:
     get_last_sc = None
 
 
-FIRMWARE_VERSION = "2025-11-21_02"
+FIRMWARE_VERSION = "2026-09-28_01"
 CONFIG_FILE = "config.json"
 UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
@@ -702,9 +702,12 @@ def flush_all_buffers(mqtt_clients, config):
         # file buffer flush
         diag_set_stage("FLUSH_FILE_BUFFER_BEGIN")
         client = entry["client"]
+        flush_cfg = dict(config)
+        flush_cfg["mqtt"] = cfg
+
         client, _ = offline_buffer.flush_buffer(
             client,
-            {"mqtt": cfg},
+            flush_cfg,
             mqtt_client.publish,
         )
         entry["client"] = client
@@ -1072,6 +1075,7 @@ def main():
                     "ts": now,
                     "fw": FIRMWARE_VERSION,
                     "mem_free": gc.mem_free(),
+                    "mem_alloc": gc.mem_alloc(),
                     "wifi": sta.isconnected(),
                     "wifi_fail_count": wifi_fail_count,
                     "rssi": sta.status("rssi") if sta.isconnected() else None,
@@ -1094,6 +1098,7 @@ def main():
                 diag_set_stage("IDLE")
 
             # --- OTA MQTT keepalive / probe ---
+            diag_set_stage("OTA_PROBE_SECTION")
             if ota_slot and not ota_slot.get("client"):
                 # probaj povremeno da se poveže (da OTA radi i kad nema publish-a)
                 if sta.isconnected() and now_raw >= ota_next_probe_ts:
@@ -1114,6 +1119,7 @@ def main():
                             ota_slot["next_retry_ts"] = now_raw + ota_slot.get("cooldown_s", 30)
 
             # MQTT downlink (OTA)
+            diag_set_stage("OTA_DOWNLINK_SECTION")
             if ota_slot and ota_slot.get("client"):
                 try:
                     diag_set_stage("OTA_CHECK_MSG_BEGIN")
@@ -1142,7 +1148,8 @@ def main():
             # ---------------------------
             # Sensor.Community independent timer
             # ---------------------------
-            if sc_uploader and sta.isconnected():
+            diag_set_stage("SC_SECTION")
+            if sc_uploader and sta.isconnected() and not in_safe_mode:
                 if (time.time() - boot_ts) >= BOOT_QUIET_S:
 
                     if last_sc_ts == 0:
@@ -1215,6 +1222,7 @@ def main():
             # ---------------------------
             # Minute sampling
             # ---------------------------
+            diag_set_stage("MINUTE_SECTION")
             if now - last_minute_ts >= 60:
                 wdt_feed(wdt)
                 diag_set_stage("MEASURE_MINUTE")

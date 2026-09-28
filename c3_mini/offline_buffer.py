@@ -147,10 +147,7 @@ def flush_buffer(mqtt_client, config, publish_fn):
         except Exception:
             pass
 
-    # Dodaj sve neobrađene poruke koje nismo stigli
-    if sent_count < len(items):
-        remaining.extend(items[sent_count:])
-
+    # remaining already contains every unsent item (appended in-loop above)
     _rewrite(remaining)
 
     if sent_count:

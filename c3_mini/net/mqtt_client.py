@@ -57,29 +57,6 @@ def _wifi_kick():
         pass
 
 
-def _dns_warmup(host, port, tries=3, max_backoff_ms=1500):
-    """
-    Rešava transient OSError(-202) na ESP32:
-    - čeka da DNS/routing zaista prorade
-    - koristi kratki backoff (ne blokira predugo)
-    """
-    backoff_ms = 250
-
-    for _ in range(tries):
-        try:
-            socket.getaddrinfo(host, port)
-            return True
-        except OSError as exc:
-            if _is_network_not_ready(exc):
-                _wifi_kick()
-            time.sleep_ms(backoff_ms)
-            backoff_ms = min(backoff_ms * 2, max_backoff_ms)
-        except Exception:
-            time.sleep_ms(backoff_ms)
-            backoff_ms = min(backoff_ms * 2, max_backoff_ms)
-
-    return False
-
 
 def _tcp_probe(host, port, timeout_s=2):
     """
@@ -131,7 +108,7 @@ def connect_mqtt(config):
     password = mqtt_config.get("password", None)
     use_tls = bool(mqtt_config.get("tls", False))
 
-    connect_retries = int(mqtt_config.get("connect_retries", 3))
+    connect_retries = int(mqtt_config.get("connect_retries", 2))
     backoff_ms = int(mqtt_config.get("connect_backoff_ms", 500))
     sock_timeout = int(mqtt_config.get("socket_timeout", 5))
 
@@ -150,11 +127,8 @@ def connect_mqtt(config):
     _stage("MQTT_CONN_CFG")
     print("MQTT connecting →", host, "port:", port, "TLS:", use_tls)
 
-    # DNS warmup (short)
-    _stage("MQTT_CONN_DNS_WARMUP_BEGIN")
-    _dns_warmup(host, port, tries=3)
-    _stage("MQTT_CONN_DNS_WARMUP_DONE")
-
+    # TCP probe: resolves DNS, attempts connect, closes immediately.
+    # This is the only pre-check needed — _dns_warmup is redundant here.
     _stage("MQTT_CONN_TCP_PROBE_BEGIN")
     if not _tcp_probe(host, port, timeout_s=min(sock_timeout, 2)):
         _stage("MQTT_CONN_TCP_PROBE_FAIL")
@@ -174,7 +148,7 @@ def connect_mqtt(config):
 
         try:
             _stage("MQTT_CONN_CONNECT_BEGIN_A{}".format(attempt))
-            client.connect()
+            client.connect(timeout=sock_timeout)
             _stage("MQTT_CONN_CONNECT_OK_A{}".format(attempt))
             print("MQTT connected.")
             return client

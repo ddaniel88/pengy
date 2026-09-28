@@ -283,7 +283,7 @@ class SensorCommunityUploader(BaseUploader):
             try:
                 _stage("SC_POST_TIMEOUT_CFG_" + str(x_pin))
                 sc_cfg = self.config.get("external", {}).get("sensor_community", {})
-                timeout_s = int(sc_cfg.get("socket_timeout_s", 5) or 5)
+                timeout_s = int(sc_cfg.get("sc_socket_timeout_s", 5) or 5)
                 socket.setdefaulttimeout(timeout_s)
             except Exception:
                 timeout_s = 5
@@ -293,7 +293,7 @@ class SensorCommunityUploader(BaseUploader):
                 _stage("SC_POST_TCP_PROBE_FAIL_" + str(x_pin))
                 try:
                     if pdiag:
-                        pdiag.set_net_fail("sc_tcp_probe:" + str(x_pin), 113)
+                        pdiag.set_net_fail("sc_tcp_probe:" + str(x_pin), None)
                 except Exception:
                     pass
                 return False
