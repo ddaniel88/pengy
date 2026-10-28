@@ -280,12 +280,13 @@ class SensorCommunityUploader(BaseUploader):
             _stage("SC_POST_BODY_READY_" + str(x_pin))
             
             # Defensive: prevent SC POST from blocking indefinitely (WDT killer)
+            _stage("SC_POST_TIMEOUT_CFG_" + str(x_pin))
+            sc_cfg = self.config.get("external", {}).get("sensor_community", {})
             try:
-                _stage("SC_POST_TIMEOUT_CFG_" + str(x_pin))
-                sc_cfg = self.config.get("external", {}).get("sensor_community", {})
                 timeout_s = int(sc_cfg.get("sc_socket_timeout_s", 5) or 5)
-                socket.setdefaulttimeout(timeout_s)
-            except Exception:
+            except (TypeError, ValueError):
+                timeout_s = 5
+            if timeout_s <= 0:
                 timeout_s = 5
 
             _stage("SC_POST_TCP_PROBE_BEGIN_" + str(x_pin))
@@ -301,7 +302,9 @@ class SensorCommunityUploader(BaseUploader):
 
             _stage("SC_POST_CALL_BEGIN_" + str(x_pin))
             print("SC POST", x_pin)
-            resp = requests.post(self.base_url, headers=headers, data=body)
+            # Apply to the actual HTTP socket; the probe uses a separate socket.
+            # MicroPython does not necessarily provide socket.setdefaulttimeout.
+            resp = requests.post(self.base_url, headers=headers, data=body, timeout=timeout_s)
             
             _stage("SC_POST_CALL_OK_" + str(x_pin))
             code = getattr(resp, "status_code", None)
