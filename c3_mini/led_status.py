@@ -56,11 +56,71 @@ _OTA_ERROR_PERIOD_MS = 700
 # NEW: dok ne stigne prvo AQI setovanje, držimo startup belu kao stable
 _has_first_aqi = False
 
+# UTC schedule, checked from the existing main loop (no timers or network I/O).
+_night_dim_enabled = True
+_night_start_hour = 17
+_night_end_hour = 6
+_night_percent = 10
+_brightness_percent = 10  # Dim until the clock has been checked.
+_brightness_checked_ms = None
+_BRIGHTNESS_CHECK_MS = 30_000
+
+
+def configure(cfg=None):
+    """Read optional LED settings once. Invalid values use safe defaults."""
+    global _night_dim_enabled, _night_start_hour, _night_end_hour, _night_percent
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    def setting(key, default, maximum):
+        value = cfg.get(key, default)
+        if type(value) is int and 0 <= value <= maximum:
+            return value
+        return default
+
+    enabled = cfg.get("night_dim_enabled", True)
+    _night_dim_enabled = enabled if type(enabled) is bool else True
+    _night_start_hour = setting("night_start_hour_utc", 17, 23)
+    _night_end_hour = setting("night_end_hour_utc", 6, 23)
+    _night_percent = setting("night_brightness_percent", 10, 100)
+    _refresh_brightness(time.ticks_ms(), force=True)
+
+
+def _refresh_brightness(now_ms, force=False):
+    global _brightness_checked_ms, _brightness_percent
+    if not force and _brightness_checked_ms is not None:
+        if time.ticks_diff(now_ms, _brightness_checked_ms) < _BRIGHTNESS_CHECK_MS:
+            return
+    _brightness_checked_ms = now_ms
+
+    percent = 100
+    if _night_dim_enabled:
+        # An unset/unavailable clock should not make the LED bright at night.
+        percent = _night_percent
+        try:
+            utc = time.gmtime()
+            if utc[0] >= 2024:
+                hour = utc[3]
+                if _night_start_hour == _night_end_hour:
+                    night = True  # Equal hours allow constant dimming.
+                elif _night_start_hour > _night_end_hour:
+                    night = hour >= _night_start_hour or hour < _night_end_hour
+                else:
+                    night = _night_start_hour <= hour < _night_end_hour
+                percent = _night_percent if night else 100
+        except Exception:
+            pass
+
+    if percent != _brightness_percent:
+        _brightness_percent = percent
+        _show(_current)
+
+
 def _show(color):
     global _current
     _current = color
     try:
-        np[0] = color
+        np[0] = tuple(channel * _brightness_percent // 100 for channel in color)
         np.write()
     except Exception as ex:
         print("LED error:", ex)
@@ -155,6 +215,7 @@ def tick():
     global _wifi_last_toggle_ms, _wifi_on, _last_toggle_ms, _led_phase
 
     now = time.ticks_ms()
+    _refresh_brightness(now)
 
     # OTA modovi imaju prioritet
     if current_mode == "OTA_IN_PROGRESS":
@@ -189,5 +250,4 @@ def restore():
     if _stable_color is not None:
         _show(_stable_color)
     elif _current is not None:
-        np[0] = _current
-        np.write()
+        _show(_current)

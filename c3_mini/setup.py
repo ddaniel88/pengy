@@ -54,6 +54,12 @@ DEFAULT_CONFIG = {
         # opciono, za ručni override
         "manifest_url": ""
     },
+    "led": {
+        "night_dim_enabled": True,
+        "night_start_hour_utc": 17,
+        "night_end_hour_utc": 6,
+        "night_brightness_percent": 10,
+    },
     "security": {
         "admin_pin": "1234"
     }

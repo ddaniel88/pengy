@@ -30,7 +30,7 @@ except ImportError:
     get_last_sc = None
 
 
-FIRMWARE_VERSION = "2026-11-06_01"
+FIRMWARE_VERSION = "2026-11-06_03"
 CONFIG_FILE = "config.json"
 UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
@@ -358,20 +358,24 @@ def handle_status_request(sock):
 # MINUTE RAM BUFFER
 # ---------------------------------------------------------------------------
 
-def add_minute_to_ram(topic: str, payload: str):
+def add_minute_to_ram(broker_name: str, topic: str, payload: str):
     global minute_ram_buffer
-    minute_ram_buffer.append((topic, payload))
+    minute_ram_buffer.append((broker_name, topic, payload))
     if len(minute_ram_buffer) > MINUTE_RAM_LIMIT:
         minute_ram_buffer.pop(0)
 
 
-def flush_minute_ram(mqtt_client_instance, cfg):
+def flush_minute_ram(mqtt_client_instance, cfg, broker_name):
     global minute_ram_buffer
     if not minute_ram_buffer:
         return mqtt_client_instance
 
     still = []
-    for topic, payload in minute_ram_buffer:
+    failed = False
+    for target, topic, payload in minute_ram_buffer:
+        if target != broker_name or failed:
+            still.append((target, topic, payload))
+            continue
         diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_BEGIN")
         mqtt_client_instance, ok, net_err, _ = mqtt_client.publish(
             mqtt_client_instance,
@@ -390,7 +394,9 @@ def flush_minute_ram(mqtt_client_instance, cfg):
             diag_set_stage("FLUSH_RAM_MINUTE_PUBLISH_FAIL")
 
         if not ok and net_err:
-            still.append((topic, payload))
+            still.append((target, topic, payload))
+            # Keep this broker's backlog for a later cycle after a failure.
+            failed = True
 
     minute_ram_buffer = still
     return mqtt_client_instance
@@ -495,7 +501,7 @@ def publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload_
         if not ok and net_err:
             print("[MQTT] Failed on", entry["name"], "net err")
             if msg_type == "minute":
-                add_minute_to_ram(topic, payload)
+                add_minute_to_ram(entry["name"], topic, payload)
 
         # ako je ovo OTA broker, posle reconnect-a obavezno resubscribe
         if ota_slot and entry["name"] == ota_slot["name"]:
@@ -717,7 +723,8 @@ def flush_all_buffers(mqtt_clients, config):
 
         # RAM minute flush (ako ga koristiš)
         diag_set_stage("FLUSH_RAM_MINUTE_BEGIN")
-        entry["client"] = flush_minute_ram(entry["client"], cfg)
+        if not entry.get("next_retry_ts") or time.time() >= entry["next_retry_ts"]:
+            entry["client"] = flush_minute_ram(entry["client"], cfg, entry["name"])
         diag_set_stage("FLUSH_RAM_MINUTE_DONE")
 
 

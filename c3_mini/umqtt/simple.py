@@ -23,6 +23,7 @@ class MQTTClient:
             port = 8883 if ssl else 1883
         self.client_id = client_id
         self.sock = None
+        self._sock = None
         self.socket_timeout = None
         self.server = server
         self.port = port
@@ -66,6 +67,8 @@ class MQTTClient:
     def connect(self, clean_session=True, timeout=None):
         self.socket_timeout = timeout
         self.sock = socket.socket()
+        # MicroPython's TLS stream has no settimeout(); keep the TCP socket.
+        self._sock = self.sock
         self.sock.settimeout(timeout)
         addr = socket.getaddrinfo(self.server, self.port)[0][-1]
         self.sock.connect(addr)
@@ -198,7 +201,7 @@ class MQTTClient:
         res = self.sock.read(1)
         # check_msg polls only the first byte. Bound reads of the remaining
         # packet by the connection timeout instead of blocking indefinitely.
-        self.sock.settimeout(self.socket_timeout)
+        self._sock.settimeout(self.socket_timeout)
         if res is None:
             return None
         if res == b"":
@@ -237,4 +240,4 @@ class MQTTClient:
         try:
             return self.wait_msg()
         finally:
-            self.sock.settimeout(self.socket_timeout)
+            self._sock.settimeout(self.socket_timeout)

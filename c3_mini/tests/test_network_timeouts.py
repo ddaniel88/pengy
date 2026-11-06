@@ -72,15 +72,54 @@ class FakeSocket:
         return value
 
 
+class FakeTlsStream:
+    """MicroPython TLS exposes stream methods, but no settimeout."""
+
+    def __init__(self, sock):
+        self.sock = sock
+
+    def read(self, size):
+        return self.sock.read(size)
+
+    def write(self, data, size=None):
+        return self.sock.write(data, size)
+
+    def setblocking(self, value):
+        self.sock.setblocking(value)
+
+
 class MqttTimeoutTests(unittest.TestCase):
-    def client(self, reads):
-        client = MQTTClient(b"test", "broker.example")
+    def client(self, reads, tls=False):
+        client = MQTTClient(b"test", "broker.example", ssl=tls)
         sock = FakeSocket([b"\x20\x02\x00\x00"] + reads)
         with patch("umqtt.simple.socket.socket", return_value=sock), patch(
             "umqtt.simple.socket.getaddrinfo", return_value=[(0, 0, 0, "", ("127.0.0.1", 1883))]
-        ):
+        ), patch.dict(sys.modules, {"ssl": types.SimpleNamespace(wrap_socket=FakeTlsStream)}):
             client.connect(timeout=5)
         return client, sock
+
+    def test_tls_subscribe_without_stream_settimeout(self):
+        client, sock = self.client([b"\x90", b"\x03\x00\x01\x00"], tls=True)
+        client.set_callback(Mock())
+        client.subscribe(b"test/cmd/#")
+        self.assertEqual(sock.timeout, 5)
+
+    def test_tls_poll_restores_timeout_after_empty_read_and_errors(self):
+        for value in (None, OSError(110)):
+            with self.subTest(value=value):
+                client, sock = self.client([value], tls=True)
+                if isinstance(value, Exception):
+                    with self.assertRaises(OSError):
+                        client.check_msg()
+                else:
+                    self.assertIsNone(client.check_msg())
+                self.assertEqual(sock.timeout, 5)
+
+    def test_tls_partial_packet_keeps_tcp_timeout(self):
+        client, sock = self.client([b"\x30", OSError(110)], tls=True)
+        with self.assertRaises(OSError):
+            client.check_msg()
+        self.assertEqual(sock.timeout, 5)
 
     def test_empty_poll_restores_connection_timeout(self):
         client, sock = self.client([None])
