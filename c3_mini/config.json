@@ -9,33 +9,33 @@
         "beta_manifest_url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/heads/C3mini-SEN55/ota/beta/manifest.json"
     },
     "mqtt_primary": {
-		"enabled": true,
+        "enabled": true,
         "host": "3475845782674f5d8df5a2eba099bcc5.s1.eu.hivemq.cloud",
         "port": 8883,
-		"username": "*****",
-		"password": "*****",
-		"tls": true,
-		"connect_retries": 5,
+        "username": "*****",
+        "password": "*****",
+        "tls": true,
+        "connect_retries": 5,
         "connect_backoff_ms": 400,
         "socket_timeout": 5,
         "base_topic": "pengy/rs/nis",
         "retain": true,
-		"allow_ota_commands": true
+        "allow_ota_commands": true
     },
-	"mqtt_secondary": {
-		"enabled": true,
-		"host": "test.mosquitto.org",
-		"port": 1883,
-		"tls": false,
-		"connect_retries": 5,
+    "mqtt_secondary": {
+        "enabled": true,
+        "host": "test.mosquitto.org",
+        "port": 1883,
+        "tls": false,
+        "connect_retries": 5,
         "connect_backoff_ms": 400,
         "socket_timeout": 5,
-		"base_topic": "pengy/rs/nis",
-		"retain": false,
-		"allow_ota_commands": true
-	},
+        "base_topic": "pengy/rs/nis",
+        "retain": false,
+        "allow_ota_commands": true
+    },
     "device": {
-		"board": "esp32s3_n16r8",
+        "board": "esp32s3_n16r8",
         "uid": "pengy-wifi-kowalski-a9a4",
         "name": "Green Oasis",
         "description": "",
@@ -44,9 +44,19 @@
         "altitude": 210,
         "ground_offset": 20.0,
         "status": "active",
-        "streams": ["pm1", "pm4", "pm2_5", "pm10", "temperature", "humidity", "pressure"],
-		"sensors": ["sps30", "bme280"],
-        
+        "streams": [
+            "pm1",
+            "pm4",
+            "pm2_5",
+            "pm10",
+            "temperature",
+            "humidity",
+            "pressure"
+        ],
+        "sensors": [
+            "sps30",
+            "bme280"
+        ],
         "sds011_keep_awake_pm_threshold": 200.0,
         "sds011_keep_awake_hold_s": 300,
         "sds011_suspect_pm_threshold": 800.0,
@@ -57,7 +67,7 @@
         "samples_per_min": 10,
         "trim": true,
         "agg_window": 10
-    },    
+    },
     "external": {
         "sensor_community": {
             "enabled": true,
@@ -65,9 +75,9 @@
             "sensor_id": "esp32-0e0408e8",
             "interval_seconds": 145,
             "software_version": "pengy-wifi-1.0",
-			"retry_interval_seconds": 20,
-			"sc_socket_timeout_s": 5,
-			"retry_max": 2
+            "retry_interval_seconds": 20,
+            "sc_socket_timeout_s": 5,
+            "retry_max": 2
         },
         "pengy_api": {
             "enabled": false,
@@ -80,15 +90,25 @@
         "timeout_ms": 120000
     },
     "recovery": {
-        "sensor_fail_threshold": 3
+        "sensor_fail_threshold": 3,
+        "periodic_diag_s": 600,
+        "safe_mode_after_wdt_s": 300,
+        "flush_max_per_cycle": 5,
+        "flush_time_budget_ms": 2000
     },
     "power": {
         "boot_quiet_s": 20
     },
     "security": {
         "admin_pin": "*****",
-		"ota_enabled": true,
-		"require_secure_ota": false,
-		"ota_token": "*****"
+        "ota_enabled": true,
+        "require_secure_ota": false,
+        "ota_token": "*****"
+    },
+    "led": {
+        "night_dim_enabled": true,
+        "night_start_hour_utc": 17,
+        "night_end_hour_utc": 6,
+        "night_brightness_percent": 10
     }
 }
