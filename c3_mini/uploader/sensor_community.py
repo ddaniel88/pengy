@@ -4,6 +4,9 @@ import ujson
 import gc
 import socket
 from uploader.base import BaseUploader
+from sensors.pm_validation import (
+    invalid_pm, first_value, PM1_KEYS, PM25_KEYS, PM4_KEYS, PM10_KEYS,
+)
 
 try:
     import urequests as requests
@@ -176,29 +179,12 @@ class SensorCommunityUploader(BaseUploader):
         return bool(pm_ok or met_ok)
 
     def _send_pm(self, data: dict) -> bool:
-        pm1 = (
-            data.get("pm1")
-            or data.get("pm1_0")
-            or data.get("pm01")
-        )
-        pm25 = (
-            data.get("pm25")
-            or data.get("pm2_5")
-            or data.get("pm_2_5")
-        )
-        pm10 = (
-            data.get("pm10")
-            or data.get("pm10_0")
-            or data.get("pm_10")
-        )
-        pm4 = (
-            data.get("pm4")
-            or data.get("pm04")
-            or data.get("pm4_0")
-            or data.get("pm_4")
-            or data.get("pm_4_0")
-            or data.get("pm4.0")
-        )
+        if invalid_pm(data):
+            return False
+        pm1 = first_value(data, PM1_KEYS)
+        pm25 = first_value(data, PM25_KEYS)
+        pm10 = first_value(data, PM10_KEYS)
+        pm4 = first_value(data, PM4_KEYS)
 
         if pm1 is None and pm25 is None and pm10 is None and pm4 is None:
             return False

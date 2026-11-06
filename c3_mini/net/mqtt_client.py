@@ -8,6 +8,7 @@ import socket
 from umqtt.simple import MQTTClient
 
 import offline_buffer
+from sensors.pm_validation import sanitize_pm_message
 
 try:
     import pengy_diag as pdiag
@@ -206,6 +207,11 @@ def publish(
     - on OSError -> drop client + let caller retry later
     - buffer only non-minute when it was a network error
     """
+
+    if message_type in ("minute", "agg", "aggregate"):
+        message = sanitize_pm_message(message)
+        if message is None:
+            return client, False, False, False
 
     last_network_error = False
     did_reconnect = False

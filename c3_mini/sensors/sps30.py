@@ -3,6 +3,7 @@
 import time
 import struct
 from sensors.base import BaseEnvSensor
+from sensors.pm_validation import invalid_pm
 
 I2C_ADDR = 0x69
 
@@ -79,12 +80,13 @@ class Sps30Sensor(BaseEnvSensor):
             time.sleep(1)
 
         samples = []
+        rejected_pm = False
 
         for _ in range(samples_count):
             try:
                 raw = self._read_raw_frame()
                 vals = self._parse_10_floats(raw)
-                if vals and vals[0] is not None:
+                if vals:
                     # prve 4 su nam bitne
                     sample = {
                         "pm1": vals[0],
@@ -92,12 +94,20 @@ class Sps30Sensor(BaseEnvSensor):
                         "pm4": vals[2],
                         "pm10": vals[3],
                     }
-                    samples.append(sample)
+                    if invalid_pm(sample):
+                        rejected_pm = True
+                    elif all(value is not None for value in vals[:4]):
+                        samples.append(sample)
             except Exception:
                 # ako jedan sample omane, samo nastavi
                 pass
 
             time.sleep(interval_seconds)
+
+        # Do not hide an out-of-range sample by trimming or averaging it away.
+        if rejected_pm:
+            print("[SPS30] PM cycle rejected: invalid value or outside 0..1000")
+            return None
 
         if not samples:
             return None

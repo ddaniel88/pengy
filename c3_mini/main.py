@@ -20,6 +20,7 @@ from ota import ota_manager
 from ota import ota_state
 from sensors.manager import SensorManager
 from sensors.factory import create_sensors
+from sensors.pm_validation import first_value, PM25_KEYS, PM10_KEYS, sanitize_pm
 from uploader.external_manager import ExternalManager
 from uploader.sensor_community import SensorCommunityUploader
 
@@ -29,7 +30,7 @@ except ImportError:
     get_last_sc = None
 
 
-FIRMWARE_VERSION = "2026-09-28_01"
+FIRMWARE_VERSION = "2026-11-06_01"
 CONFIG_FILE = "config.json"
 UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
@@ -596,12 +597,9 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
         trim_extremes=trim_extremes
     )
 
-    pm25 = (
-        measurement.get("pm25") or measurement.get("pm2_5") or measurement.get("pm_2_5")
-    )
-    pm10 = (
-        measurement.get("pm10") or measurement.get("pm10_0") or measurement.get("pm_10")
-    )
+    measurement = sanitize_pm(measurement)
+    pm25 = first_value(measurement, PM25_KEYS)
+    pm10 = first_value(measurement, PM10_KEYS)
 
     # LED AQI
     aqi = aqi_utils.get_aqi_level(pm25=pm25, pm10=pm10)
@@ -636,6 +634,7 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
 # ---------------------------------------------------------------------------
 
 def calculate_aggregated(measurements, agg_window):
+    measurements = [sanitize_pm(m) for m in (measurements or []) if m]
     if not measurements:
         return None
 
@@ -648,6 +647,9 @@ def calculate_aggregated(measurements, agg_window):
     for k in all_keys:
         values = [m[k] for m in measurements if m and isinstance(m.get(k), (int, float))]
         agg[k] = sum(values) / len(values) if values else None
+
+    if not agg:
+        return None
 
     now = time.time() + UNIX_EPOCH_OFFSET
     return {
@@ -724,10 +726,10 @@ def flush_all_buffers(mqtt_clients, config):
 # ---------------------------------------------------------------------------
 
 def _sc_pick(m: dict, keys):
-    """Pick first numeric value; ignore 0.0 (treat as invalid)."""
+    """Pick first numeric value, including zero."""
     for k in keys:
         v = m.get(k)
-        if isinstance(v, (int, float)) and v != 0.0:
+        if isinstance(v, (int, float)):
             return v
     return None
 
@@ -735,6 +737,7 @@ def sc_accumulate(acc_sum: dict, acc_cnt: dict, m: dict):
     """Accumulate canonical fields used by SensorCommunityUploader."""
     if not m:
         return
+    m = sanitize_pm(m)
 
     # PM (canonical keys for your uploader)
     pm1 = _sc_pick(m, ["pm1", "pm1_0", "pm01"])
@@ -825,6 +828,8 @@ def main():
         import setup
         setup.run_setup_mode()
         return
+
+    led_status.configure(config.get("led"))
         
     periodic_diag_last_ts = 0
     PERIODIC_DIAG_S = int(config.get("recovery", {}).get("periodic_diag_s", 600) or 600)  # 10 min
@@ -1272,7 +1277,7 @@ def main():
                     # skip SC/MQTT early after boot to reduce power spikes
                     pass
                 else:
-                    if not in_safe_mode:
+                    if not in_safe_mode and payload["data"]:
                         diag_set_stage("MQTT_PUBLISH_MINUTE")
                         publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, payload, "minute", wdt=wdt)
                         diag_set_stage("MINUTE_PUBLISH_RETURNED")

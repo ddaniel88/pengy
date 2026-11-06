@@ -1,6 +1,7 @@
 # offline_buffer.py
 import ujson
 import os
+from sensors.pm_validation import sanitize_pm_message
 
 BUFFER_FILE = "offline_buffer.jsonl"
 MAX_BYTES = 60_000  # oko 60KB, dovoljno za više dana agregata
@@ -119,6 +120,13 @@ def flush_buffer(mqtt_client, config, publish_fn):
 
         msg_type = item.get("type", "aggregate")
         payload = item.get("payload", "")
+
+        if msg_type in ("minute", "agg", "aggregate"):
+            payload = sanitize_pm_message(payload)
+            if payload is None:
+                # Drop PM-only invalid history instead of retrying it forever.
+                continue
+            item["payload"] = payload
 
         if msg_type == "aggregate":
             topic = "{}/{}/agg".format(base_topic, uid)
