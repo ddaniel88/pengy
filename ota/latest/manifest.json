@@ -1,91 +1,79 @@
 {
-  "firmware_version": "2026-11-12_06",
+  "firmware_version": "2026-11-12_07",
   "device_type": "pengy-wifi",
-  "total_size": 122621,
+  "total_size": 118370,
   "files": [
-    {
-      "path": "ota_recovery.py",
-      "size": 4781,
-      "sha256": "c3728ceb9f53ec76616109ad6d38b14353270139ef1d0487ea38e0c00b28f634",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/ota_recovery.py.ota"
-    },
-    {
-      "path": "boot.py",
-      "size": 1194,
-      "sha256": "9a396fe0ffae5962af1034f97627a2123c11bd777d4e8fd4e867a3c6f282ba3d",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/boot.py.ota"
-    },
     {
       "path": "ota/ota_state.py",
       "size": 3223,
       "sha256": "d9800db3d097dbc0aa02421a15177e0612d5439ea1dd512e9f6cbbb6eb41c8da",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/ota/ota_state.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/ota/ota_state.py.ota"
     },
     {
       "path": "ota/ota_manager.py",
       "size": 15351,
       "sha256": "7c96604e4679579e269c37b36bfcd1c3a952455141383efc70e34491d94914e3",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/ota/ota_manager.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/ota/ota_manager.py.ota"
     },
     {
       "path": "sensors/sps30_diag.py",
       "size": 2757,
       "sha256": "10dedf08920664901272731c69342a8f73ca0129ce70d39ebdb605cc7efc8b16",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/sps30_diag.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/sps30_diag.py.ota"
     },
     {
       "path": "sensors/sps30_probe.py",
-      "size": 7503,
-      "sha256": "7c5bf0a6312057c7e351b1ab8044ce8b1c6428a5e746cc27130824b94508eaf9",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/sps30_probe.py.ota"
+      "size": 8149,
+      "sha256": "ac57a17271f2cf767d3673a968b94379055ea9b05e316d8f3708aa8d8823797f",
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/sps30_probe.py.ota"
     },
     {
       "path": "sensors/sps30_service.py",
-      "size": 2630,
-      "sha256": "1fea8b3123af94828f1a9be1ea6ab83a9a1beb37fb7aeb177ea6c85c1503375a",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/sps30_service.py.ota"
+      "size": 2807,
+      "sha256": "5327127ee2b62f6a5f833d6011ba393116509826acfb96a2bfda6ad09a354cb3",
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/sps30_service.py.ota"
     },
     {
       "path": "sensors/sps30.py",
-      "size": 7079,
-      "sha256": "155422d12d043971f21ee81f7a18f195cdf6170588cdd1b7c1b751b916e83378",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/sps30.py.ota"
+      "size": 7971,
+      "sha256": "581dac28523e04345e2c8fa1a62914e6beb9dfcdcd5c11e12a8e5b223e2dfe5e",
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/sps30.py.ota"
     },
     {
       "path": "sensors/factory.py",
       "size": 3993,
       "sha256": "e7adcdd33dfd0fd7876f2ff1f64a4d9d0b187c871c04f705e9692dd583d70ad7",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/factory.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/factory.py.ota"
     },
     {
       "path": "sensors/manager.py",
       "size": 1579,
       "sha256": "f9910a560d3ccdda29b26ec211922433f6f489b18187db1e79ec885b75b88d5e",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/sensors/manager.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/sensors/manager.py.ota"
     },
     {
       "path": "maintenance_handler.py",
-      "size": 6160,
-      "sha256": "31f4ab5c9cffecb80d7590513b221890fc2c42010b721b057bc46c328b5d3838",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/maintenance_handler.py.ota"
+      "size": 6169,
+      "sha256": "6856c31aab252e60afff882cc4f6e22c58605e64ae7060afbdff26ba270bd7b6",
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/maintenance_handler.py.ota"
     },
     {
       "path": "umqtt/simple.py",
       "size": 7694,
       "sha256": "681438f1466aa0e782b1cf0ef199dc2e476744652bcf88584d82295469fec0ea",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/umqtt/simple.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/umqtt/simple.py.ota"
     },
     {
       "path": "net/mqtt_client.py",
       "size": 9517,
       "sha256": "220b19ce81284f624df022ea03aba51820809b201ccff1675098f0f70d795831",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/net/mqtt_client.py.ota"
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/net/mqtt_client.py.ota"
     },
     {
       "path": "main.py",
       "size": 49160,
-      "sha256": "70c453794a148b2bb67426bcd9f06f9aca222d43759be364417aeec07e2dc7a4",
-      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_06/ota/releases/rico-sps30-2026-11-12_06/main.py.ota"
+      "sha256": "adfb3a94e15aabf82d82031143faf2e0489024268c35d183882d0c34a30b5669",
+      "url": "https://raw.githubusercontent.com/ddaniel88/pengy/refs/tags/rico-sps30-2026-11-12_07/ota/releases/rico-sps30-2026-11-12_07/main.py.ota"
     }
   ]
 }
