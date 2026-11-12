@@ -1,0 +1,62 @@
+"""Optional, bounded diagnostics from existing SPS30 reads; no hardware access."""
+
+MAX_TRACE_SAMPLES = 16
+_INF = float("inf")
+
+
+class Sps30Diagnostics:
+    def __init__(self):
+        self.totals = {"cycles": 0, "accepted_samples": 0, "crc_bad_samples": 0,
+                       "read_errors": 0, "start_errors": 0, "range_rejected_cycles": 0}
+        self.last = None
+
+    def begin(self, requested, trim):
+        self.totals["cycles"] += 1
+        self.last = {"requested": requested, "trim": bool(trim), "accepted": 0,
+                     "crc_bad": 0, "read_errors": 0, "range_rejected": False,
+                     "raw_pm": [], "result": None, "last_errno": None,
+                     "last_error_type": None, "pm_min": [None] * 4,
+                     "pm_max": [None] * 4, "crc_bad_fields": [0] * 4}
+
+    def frame(self, values, accepted, out_of_range):
+        for index, value in enumerate(values[:4]):
+            if value is None:
+                self.last["crc_bad_fields"][index] += 1
+            elif -_INF < value < _INF:
+                low = self.last["pm_min"][index]
+                high = self.last["pm_max"][index]
+                self.last["pm_min"][index] = value if low is None else min(low, value)
+                self.last["pm_max"][index] = value if high is None else max(high, value)
+        if any(value is None for value in values[:4]):
+            self.last["crc_bad"] += 1
+            self.totals["crc_bad_samples"] += 1
+        if accepted:
+            self.last["accepted"] += 1
+            self.totals["accepted_samples"] += 1
+        self.last["range_rejected"] = self.last["range_rejected"] or out_of_range
+        if len(self.last["raw_pm"]) < MAX_TRACE_SAMPLES:
+            # Row: PM1, PM2.5, PM4, PM10, accepted. None denotes bad CRC.
+            # Non-finite values are strings so diagnostic JSON remains valid.
+            row = [value if value is None or -_INF < value < _INF else str(value)
+                   for value in values[:4]]
+            row.append(bool(accepted))
+            self.last["raw_pm"].append(row)
+
+    def error(self, exc, starting=False):
+        key = "start_errors" if starting else "read_errors"
+        self.totals[key] += 1
+        if not starting:
+            self.last["read_errors"] += 1
+        args = getattr(exc, "args", ())
+        self.last["last_errno"] = args[0] if args and isinstance(args[0], int) else None
+        self.last["last_error_type"] = exc.__class__.__name__
+
+    def finish(self, result):
+        self.last["result"] = result
+        if self.last["range_rejected"]:
+            self.totals["range_rejected_cycles"] += 1
+
+    def snapshot(self):
+        if self.last is None:
+            return None
+        return {"totals": self.totals, "last": self.last}
