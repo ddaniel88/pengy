@@ -1,0 +1,149 @@
+"""Boot-time file transaction recovery, kept outside the updatable OTA package."""
+import os
+import ujson
+
+JOURNAL = "ota_transaction.json"
+
+
+def exists(path):
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
+def write_json(path, value):
+    with open(path + ".tmp", "w") as stream:
+        stream.write(ujson.dumps(value))
+    # LittleFS rename replaces the target; do not unlink the old journal first.
+    os.rename(path + ".tmp", path)
+    if hasattr(os, "sync"):
+        os.sync()
+
+
+def read_json(path):
+    with open(path) as stream:
+        return ujson.loads(stream.read())
+
+
+def safe_path(path):
+    return (isinstance(path, str) and 0 < len(path) <= 100
+            and "\\" not in path and ":" not in path
+            and all(part not in ("", ".", "..") for part in path.split("/")))
+
+
+def prepare(manifest):
+    if exists(JOURNAL):
+        raise ValueError("OTA transaction already pending")
+    entries = []
+    for entry in manifest["files"]:
+        path = entry["path"]
+        if not safe_path(path) or not exists(path + ".ota"):
+            raise ValueError("Unstaged OTA file")
+        if exists(path + ".bak"):
+            os.remove(path + ".bak")
+        entries.append({"path": path, "original": exists(path)})
+    transaction = {"phase": "activate", "version": manifest["firmware_version"],
+                   "boots": 0, "files": entries}
+    write_json(JOURNAL, transaction)
+    return transaction
+
+
+def rollback(transaction):
+    transaction["phase"] = "rollback"
+    write_json(JOURNAL, transaction)
+    for entry in reversed(transaction["files"]):
+        path = entry["path"]
+        if not safe_path(path):
+            raise ValueError("Invalid recovery path")
+        if exists(path + ".bak"):
+            if exists(path):
+                os.remove(path)
+            os.rename(path + ".bak", path)
+        elif not entry["original"] and exists(path):
+            os.remove(path)
+    # Clear legacy try_update so the restored app does not adopt it again.
+    if exists("ota_state.json"):
+        state = read_json("ota_state.json")
+        state.update({"state": "error", "pending_version": None,
+                      "last_error": "rolled_back"})
+        write_json("ota_state.json", state)
+    os.remove(JOURNAL)
+    if hasattr(os, "sync"):
+        os.sync()
+
+
+def activate(manifest, feed=None):
+    transaction = prepare(manifest)
+    try:
+        for entry in transaction["files"]:
+            if feed:
+                feed()
+            path = entry["path"]
+            if entry["original"]:
+                os.rename(path, path + ".bak")
+            os.rename(path + ".ota", path)
+        transaction["phase"] = "trial"
+        write_json(JOURNAL, transaction)
+    except Exception:
+        rollback(transaction)
+        raise
+
+
+def _adopt_legacy_trial():
+    # The OLD updater cannot journal activation. Only adopt its completed update.
+    if not exists("ota_state.json") or not exists("ota_manifest.json"):
+        return None
+    state = read_json("ota_state.json")
+    if state.get("state") != "try_update":
+        return None
+    manifest = read_json("ota_manifest.json")
+    if state.get("pending_version") != manifest.get("firmware_version"):
+        return None
+    files = manifest.get("files", [])
+    if not 1 <= len(files) <= 64:
+        raise ValueError("Invalid legacy manifest")
+    entries = []
+    for entry in files:
+        path = entry["path"]
+        if not safe_path(path) or not exists(path):
+            raise ValueError("Incomplete legacy activation")
+        entries.append({"path": path, "original": exists(path + ".bak")})
+    transaction = {"phase": "trial", "version": manifest["firmware_version"],
+                   "boots": 0, "files": entries, "legacy": True}
+    write_json(JOURNAL, transaction)
+    return transaction
+
+
+def boot_check():
+    import machine
+    transaction = read_json(JOURNAL) if exists(JOURNAL) else _adopt_legacy_trial()
+    if transaction is None:
+        return
+    if transaction["phase"] == "confirmed":
+        os.remove(JOURNAL)
+        return
+    # A failed import also needs a reset to reach recovery on the next boot.
+    machine.WDT(timeout=120000)
+    if transaction["phase"] != "trial" or transaction["boots"] >= 2:
+        rollback(transaction)
+        machine.reset()
+        return
+    transaction["boots"] += 1
+    write_json(JOURNAL, transaction)
+
+
+def pending():
+    return exists(JOURNAL)
+
+
+def confirm(version):
+    if not exists(JOURNAL):
+        return
+    transaction = read_json(JOURNAL)
+    if transaction["phase"] != "trial" or transaction["version"] != version:
+        raise ValueError("OTA trial version mismatch")
+    transaction["phase"] = "confirmed"
+    write_json(JOURNAL, transaction)
+    os.remove(JOURNAL)

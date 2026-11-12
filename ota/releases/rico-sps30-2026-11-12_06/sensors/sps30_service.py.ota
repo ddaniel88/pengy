@@ -1,0 +1,64 @@
+"""Small diagnostic command/report bridge; never publishes measurement data."""
+import time
+from sensors.sps30_probe import Sps30Probe
+
+
+class Sps30Service:
+    def __init__(self):
+        self.probe = None
+        self.pending = None
+        self.next_send = 0
+        self.send_attempts = 0
+
+    def busy(self):
+        return bool(self.probe and self.probe.active)
+
+    def tick(self, manager, request=None, trim=True):
+        if self.probe:
+            # Normal failure recovery can recreate the driver between tests.
+            # Always pause/operate on the current manager's sensor instance.
+            for sensor in manager.sensors:
+                if sensor.__class__.__name__ == "Sps30Sensor":
+                    self.probe.sensor = sensor
+                    sensor.probe = self.probe
+                    break
+        if request:
+            action = request["action"]
+            test_id = request["test_id"]
+            accepted = False
+            if action == "observe" and not self.busy() and self.pending is None:
+                sensor = next((s for s in manager.sensors
+                               if s.__class__.__name__ == "Sps30Sensor"), None)
+                if sensor:
+                    self.probe = Sps30Probe(sensor, test_id, trim)
+                    sensor.probe = self.probe
+                    accepted = True
+            elif self.probe and test_id == self.probe.test_id:
+                accepted = self.probe.command(action, test_id)
+            # One bounded status slot. Busy commands must not overwrite a report.
+            if not accepted and self.pending is None:
+                self.pending = {"test_id": test_id, "phase": action,
+                                "outcome": "refused", "seq": request["seq"]}
+                self.send_attempts = 0
+                self.next_send = time.ticks_ms()
+        if self.probe:
+            self.probe.tick()
+            if self.probe.report and self.pending is None:
+                self.pending = self.probe.report
+                self.send_attempts = 0
+                self.next_send = time.ticks_ms()
+
+    def report_due(self):
+        return (self.pending is not None and
+                time.ticks_diff(time.ticks_ms(), self.next_send) >= 0)
+
+    def sent(self, ok):
+        self.send_attempts += 1
+        if ok or self.send_attempts >= 3:
+            if self.probe and self.pending is self.probe.report:
+                if ok:
+                    self.probe.delivered()
+                else:
+                    self.probe.report = None
+            self.pending = None
+        self.next_send = time.ticks_add(time.ticks_ms(), 30000)

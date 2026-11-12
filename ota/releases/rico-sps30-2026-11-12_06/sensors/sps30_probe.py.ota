@@ -1,0 +1,175 @@
+"""On-demand SPS30 investigation. One short bus operation per loop tick."""
+import time
+from sensors.sps30_diag import Sps30Diagnostics
+from sensors.pm_validation import invalid_pm
+
+PM_FIELDS = ("pm1", "pm2_5", "pm4", "pm10")
+
+
+class Sps30Probe:
+    def __init__(self, sensor, test_id, trim=True):
+        self.sensor = sensor
+        self.test_id = test_id
+        self.trim = trim
+        self.baseline_sent = False
+        self.used = set()
+        self.report = None
+        self.active = False
+        self.begin("observe")
+
+    def begin(self, phase):
+        self.phase = phase
+        self.active = True
+        self.report = None
+        self.info = {"initial_started": self.sensor._started,
+                     "boot_reset": False, "status_cleared": False}
+        self.stats = Sps30Diagnostics()
+        self.stats.begin(10, self.trim)
+        self.samples = []
+        self.attempts = 0
+        self.ready_yes = 0
+        self.ready_no = 0
+        self.ready_errors = 0
+        self.ready_crc_errors = 0
+        self.crc_bad_all_fields = [0] * 10
+        self.next_ms = time.ticks_ms()
+        self.deadline = time.ticks_add(self.next_ms, 120000)
+        self.stage = "version"
+        self.version = None
+        self.rejected = False
+
+    def command(self, action, test_id):
+        if action == "cancel":
+            self.finish("cancelled")
+            return True
+        if (self.active or not self.baseline_sent or test_id != self.test_id
+                or action not in ("restart", "reset") or action in self.used):
+            return False
+        # Reset is a separate step after a delivered stop/start report.
+        if action == "reset" and "restart_sent" not in self.used:
+            return False
+        self.used.add(action)
+        self.begin(action)
+        return True
+
+    def delivered(self):
+        if self.phase == "observe" and self.report.get("outcome") == "complete":
+            self.baseline_sent = True
+        if self.phase == "restart" and self.report.get("outcome") == "complete":
+            self.used.add("restart_sent")
+        self.report = None
+
+    def finish(self, outcome):
+        result = None
+        if self.samples and not self.rejected:
+            result = {}
+            for index, field in enumerate(PM_FIELDS):
+                values = sorted(row[index] for row in self.samples)
+                if self.trim and len(values) > 2:
+                    values = values[1:-1]
+                result[field] = sum(values) / len(values)
+        self.stats.finish(result)
+        self.report = {"test_id": self.test_id, "phase": self.phase,
+                       "outcome": outcome, "info": self.info,
+                       "ready": {"yes": self.ready_yes, "no": self.ready_no,
+                                 "errors": self.ready_errors},
+                       "ready_crc_errors": self.ready_crc_errors,
+                       "crc_bad_all_fields": self.crc_bad_all_fields,
+                       "samples": self.stats.last,
+                       "raw_columns": ["pm1", "pm2_5", "pm4", "pm10", "nc0_5",
+                                       "nc1", "nc2_5", "nc4", "nc10", "size_um"],
+                       "raw_all": getattr(self, "raw_all", [])}
+        self.active = False
+        self.samples = []
+        self.raw_all = []
+
+    def tick(self):
+        if not self.active:
+            return
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self.deadline) >= 0:
+            self.finish("timeout")
+            return
+        if time.ticks_diff(now, self.next_ms) < 0:
+            return
+        stage = self.stage
+        try:
+            if stage == "version":
+                self.raw_all = []
+                self.version = self.sensor.read_version()
+                self.info["firmware"] = list(self.version)
+            elif stage == "product":
+                self.info["product"] = self.sensor.read_product()
+            elif stage == "serial":
+                self.info["serial"] = self.sensor.read_serial()
+            elif stage in ("status_before", "status_after"):
+                if self.version is None:
+                    self.info[stage] = {"unavailable": "version_unknown"}
+                elif self.version < (2, 2):
+                    self.info[stage] = {"unsupported": True}
+                else:
+                    self.info[stage] = self.sensor.read_status()
+            elif stage == "intervene":
+                if self.phase == "restart":
+                    self.sensor.stop_measurement()
+                    self.info["stop_sent"] = True
+                elif self.phase == "reset":
+                    self.sensor.reset_sensor()
+                    self.info["reset_sent"] = True
+                self.next_ms = time.ticks_add(now, 100)
+            elif stage == "start":
+                if not self.sensor._started:
+                    self.sensor._start_measurement()
+                    self.info["start_sent"] = True
+                    # Datasheet settling time up to 30 s at low concentrations.
+                    self.next_ms = time.ticks_add(now, 30000)
+            elif stage == "ready":
+                self.attempts += 1
+                if self.sensor.data_ready():
+                    self.ready_yes += 1
+                    self.stage = "sample"
+                    return
+                self.ready_no += 1
+                self.next_ms = time.ticks_add(now, 2000)
+                if self.attempts >= 20:
+                    self.stage = "status_after"
+                return
+            elif stage == "sample":
+                values = self.sensor._parse_10_floats(self.sensor._read_raw_frame())
+                for index, value in enumerate(values):
+                    if value is None:
+                        self.crc_bad_all_fields[index] += 1
+                sample = dict(zip(PM_FIELDS, values[:4]))
+                bad = invalid_pm(sample)
+                accepted = not bad and all(v is not None for v in values[:4])
+                self.rejected = self.rejected or bad
+                self.stats.frame(values, accepted, bad)
+                self.raw_all.append([v if v is None or -float("inf") < v < float("inf")
+                                     else str(v) for v in values])
+                if accepted:
+                    self.samples.append(values[:4])
+                self.stage = "status_after" if len(self.raw_all) >= 10 or self.attempts >= 20 else "ready"
+                self.next_ms = time.ticks_add(now, 2000)
+                return
+        except Exception as exc:
+            self.info[stage + "_error"] = type(exc).__name__
+            if stage == "ready":
+                self.ready_errors += 1
+                if type(exc).__name__ == "Sps30CRCError":
+                    self.ready_crc_errors += 1
+                self.stage = "status_after" if self.attempts >= 20 else "ready"
+                self.next_ms = time.ticks_add(now, 2000)
+                return
+            if stage == "sample":
+                self.stats.error(exc)
+                self.stage = "status_after" if self.attempts >= 20 else "ready"
+                self.next_ms = time.ticks_add(now, 2000)
+                return
+            if stage in ("intervene", "start"):
+                self.finish("command_failed")
+                return
+        stages = ("version", "product", "serial", "status_before", "intervene", "start", "ready")
+        if stage == "status_after":
+            self.finish("complete")
+        else:
+            self.stage = stages[stages.index(stage) + 1]
