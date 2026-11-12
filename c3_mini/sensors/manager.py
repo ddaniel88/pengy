@@ -18,6 +18,19 @@ class SensorManager:
                 pass
         return list(all_fields)
 
+    def get_diagnostics(self):
+        snapshots = {}
+        for sensor in self.sensors:
+            try:
+                getter = getattr(sensor, "get_diagnostics", None)
+                if getter:
+                    snapshot = getter()
+                    if snapshot:
+                        snapshots[sensor.__class__.__name__] = snapshot
+            except Exception:
+                pass
+        return snapshots
+
     def measure_minute_all(self, samples_count=10, interval_seconds=2, trim_extremes=True):
         result = {}
         for s in self.sensors:

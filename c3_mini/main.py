@@ -30,7 +30,7 @@ except ImportError:
     get_last_sc = None
 
 
-FIRMWARE_VERSION = "2026-11-06_03"
+FIRMWARE_VERSION = "2026-11-09_01"
 CONFIG_FILE = "config.json"
 UNIX_EPOCH_OFFSET = 946684800  # seconds from 1970 → 2000
 
@@ -639,6 +639,16 @@ def perform_minute_sampling(sensor_manager, samples_per_min, trim_extremes, uid,
 # AGGREGATION
 # ---------------------------------------------------------------------------
 
+def add_sensor_diagnostics(payload, manager):
+    """Attach optional RAM-only snapshots to an existing diagnostic message."""
+    try:
+        snapshots = manager.get_diagnostics()
+        if snapshots:
+            payload["sensor_diagnostics"] = snapshots
+    except Exception:
+        pass
+
+
 def calculate_aggregated(measurements, agg_window):
     measurements = [sanitize_pm(m) for m in (measurements or []) if m]
     if not measurements:
@@ -1041,6 +1051,8 @@ def main():
                     if prev_crash:
                         diag_payload["prev_crash"] = prev_crash
                         diag_payload["prev_crash_count"] = prev_crash_count
+
+                    add_sensor_diagnostics(diag_payload, sensor_manager)
                     
                     ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
                     diag_set_stage("BOOT_DIAG_PUBLISH_RETURNED")
@@ -1097,6 +1109,8 @@ def main():
                     "kind": "periodic",
                     "reset_cause_last": reset_cause
                 }
+
+                add_sensor_diagnostics(diag_payload, sensor_manager)
 
                 ok_any = publish_to_all(mqtt_clients, ota_slot, config, sensor_manager, uid, diag_payload, "diag", wdt=wdt)
                 diag_set_stage("PERIODIC_DIAG_PUBLISH_RETURNED")

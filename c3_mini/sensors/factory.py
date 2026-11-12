@@ -58,7 +58,7 @@ def create_sensors(device_cfg: dict) -> list:
                 if name == "sen55":
                     sensors.append(Sen55Sensor(i2c))
                 elif name == "sps30":
-                    sensors.append(Sps30Sensor(i2c))
+                    sensors.append(Sps30Sensor(i2c, diagnostics=device_cfg.get("sps30_diagnostics") is True))
                 elif name == "bme280":
                     # opcioni override adrese:
                     # device_cfg["bme280_address"] = 0x76 ili 0x77
@@ -94,7 +94,7 @@ def create_sensors(device_cfg: dict) -> list:
             except Exception as ex:
                 print("Failed to init sensor sen55 ->", ex)
             try:
-                sensors.append(Sps30Sensor(i2c))
+                sensors.append(Sps30Sensor(i2c, diagnostics=device_cfg.get("sps30_diagnostics") is True))
             except Exception as ex:
                 print("Failed to init sensor sps30 ->", ex)
 

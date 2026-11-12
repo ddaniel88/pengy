@@ -31,9 +31,28 @@ class Sps30Sensor(BaseEnvSensor):
     Ostale (number concentration...) za sada ignorišemo.
     """
 
-    def __init__(self, i2c):
+    def __init__(self, i2c, diagnostics=False):
         self.i2c = i2c
         self._started = False
+        self._diagnostics = None
+        if diagnostics is True:
+            try:
+                from sensors.sps30_diag import Sps30Diagnostics
+                self._diagnostics = Sps30Diagnostics()
+            except Exception:
+                pass
+
+    def _diag_call(self, method, *args):
+        # Optional diagnostics must never prevent a measurement.
+        try:
+            return getattr(self._diagnostics, method)(*args)
+        except Exception:
+            return None
+
+    def get_diagnostics(self):
+        if self._diagnostics is not None:
+            return self._diag_call("snapshot")
+        return None
 
     def get_supported_fields(self):
         # ovde koristimo nazive kao u config.json
@@ -73,11 +92,20 @@ class Sps30Sensor(BaseEnvSensor):
                            samples_count: int = 5,
                            interval_seconds: int = 1,
                            trim_extremes: bool = True):
+        diag = self._diagnostics
+        if diag is not None:
+            self._diag_call("begin", samples_count, trim_extremes)
         # pokreni merenje samo prvi put
-        if not self._started:
-            self._start_measurement()
-            # SPS30 merenje ide u pozadini, ali dajemo mu malo vazduha
-            time.sleep(1)
+        try:
+            if not self._started:
+                self._start_measurement()
+                # SPS30 merenje ide u pozadini, ali dajemo mu malo vazduha
+                time.sleep(1)
+        except Exception as exc:
+            if diag is not None:
+                self._diag_call("error", exc, True)
+                self._diag_call("finish", None)
+            raise
 
         samples = []
         rejected_pm = False
@@ -94,22 +122,32 @@ class Sps30Sensor(BaseEnvSensor):
                         "pm4": vals[2],
                         "pm10": vals[3],
                     }
-                    if invalid_pm(sample):
+                    bad_pm = invalid_pm(sample)
+                    accepted = False
+                    if bad_pm:
                         rejected_pm = True
                     elif all(value is not None for value in vals[:4]):
                         samples.append(sample)
-            except Exception:
+                        accepted = True
+                    if diag is not None:
+                        self._diag_call("frame", vals, accepted, bad_pm)
+            except Exception as exc:
                 # ako jedan sample omane, samo nastavi
-                pass
+                if diag is not None:
+                    self._diag_call("error", exc)
 
             time.sleep(interval_seconds)
 
         # Do not hide an out-of-range sample by trimming or averaging it away.
         if rejected_pm:
             print("[SPS30] PM cycle rejected: invalid value or outside 0..1000")
+            if diag is not None:
+                self._diag_call("finish", None)
             return None
 
         if not samples:
+            if diag is not None:
+                self._diag_call("finish", None)
             return None
 
         # helper za proseke
@@ -122,9 +160,12 @@ class Sps30Sensor(BaseEnvSensor):
                 values = values[1:-1]
             return sum(values) / len(values)
 
-        return {
+        result = {
             "pm1": avg("pm1"),
             "pm2_5": avg("pm2_5"),
             "pm4": avg("pm4"),
             "pm10": avg("pm10"),
         }
+        if diag is not None:
+            self._diag_call("finish", result)
+        return result
