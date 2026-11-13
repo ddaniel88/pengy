@@ -1,0 +1,161 @@
+"""Bounded evidence from production reads. No calibration or acceptance policy."""
+import time
+try:
+    import ubinascii as binascii
+except ImportError:
+    import binascii
+
+TARGETS = ("pengy-wifi-kowalski-a9a4", "pengy-lab-sps30-00f8")
+FIELDS = ("pm1", "pm2_5", "pm4", "pm10", "nc0_5", "nc1", "nc2_5", "nc4", "nc10", "typical_size")
+UNITS = ("ug/m3",) * 4 + ("#/cm3",) * 5 + ("um",)
+MAX_EXAMPLES = 3
+MAX_TRACE = 16
+_capture = None
+
+
+def for_device(uid):
+    global _capture
+    if uid not in TARGETS:
+        return None
+    if _capture is None:
+        _capture = Sps30Capture()
+    return _capture
+
+
+def safe(value):
+    return value if value is None or -float("inf") < value < float("inf") else str(value)
+
+
+def hex_bytes(raw):
+    return binascii.hexlify(raw).decode()
+
+
+class Sps30Capture:
+    def __init__(self):
+        self.totals = {k: 0 for k in ("reads", "valid", "range", "crc", "read_errors",
+                       "no_new_data", "ready_errors", "cycles", "starts", "suppressed",
+                       "publish_attempts", "publish_ok", "publish_failed")}
+        self.session_ms = time.ticks_ms()
+        self.current = None
+        self.completed = None
+        self.pending = None
+        self.last_attempt_ms = None
+        self.last_normal_ms = None
+
+    def started(self):
+        self.totals["starts"] += 1
+
+    def begin(self, requested, trim):
+        self.totals["cycles"] += 1
+        self.current = {"cycle": self.totals["cycles"], "requested": requested,
+                        "trim": bool(trim), "trace": [], "trace_truncated": False,
+                        "examples": [], "accepted_count": 0, "range_rejected": False}
+
+    def ready(self, sensor):
+        # Observational: false/error never gates the original production read.
+        from sensors.sps30 import _crc8
+        result = {"value": None, "crc_ok": None, "raw_hex": None}
+        try:
+            sensor.i2c.writeto(0x69, b"\x02\x02")
+            raw = bytes(sensor.i2c.readfrom(0x69, 3))
+            result["raw_hex"] = hex_bytes(raw)
+            result["crc_ok"] = len(raw) == 3 and _crc8(raw[:2]) == raw[2]
+            if not result["crc_ok"] or raw[0] != 0 or raw[1] not in (0, 1):
+                raise ValueError("ready response")
+            result["value"] = bool(raw[1])
+            if not raw[1]:
+                self.totals["no_new_data"] += 1
+        except Exception as exc:
+            self.totals["ready_errors"] += 1
+            result["error"] = exc.__class__.__name__
+        return result
+
+    def hold(self, raw, ready):
+        # bytes() owns a mutable bus buffer BEFORE parsing; hex owns it for JSON.
+        from sensors.sps30 import _crc8
+        raw = bytes(raw)
+        crc = [_crc8(raw[i:i+2]) == raw[i+2] for i in range(0, len(raw)-2, 3)]
+        return {"read": self.totals["reads"] + 1,
+                "ticks_ms": time.ticks_ms(), "sensor_unix": time.time() + 946684800,
+                "ready": ready, "raw_hex": hex_bytes(raw), "length": len(raw),
+                "crc_words": crc, "crc_ok": len(raw) == 60 and all(crc)}
+
+    def record(self, held, ready, values=None, accepted=False, bad_pm=False, error=None):
+        self.totals["reads"] += 1
+        if held is None:
+            held = {"read": self.totals["reads"], "ticks_ms": time.ticks_ms(),
+                    "sensor_unix": time.time() + 946684800, "ready": ready,
+                    "raw_hex": None, "length": None, "crc_words": [], "crc_ok": None}
+        if error:
+            reason = "short_frame" if held["length"] is not None and held["length"] != 60 else "read_error"
+            self.totals["read_errors"] += 1
+            held["error"] = error.__class__.__name__
+        else:
+            reason = "pm_invalid_or_range" if bad_pm else ("accepted" if accepted else "pm_crc")
+            if not held["crc_ok"]:
+                self.totals["crc"] += 1
+            if bad_pm:
+                self.totals["range"] += 1
+            if accepted:
+                self.totals["valid"] += 1
+        held["decoded"] = [safe(v) for v in values] if values is not None else None
+        held["accepted"] = bool(accepted)
+        held["reason"] = reason
+        cycle = self.current
+        cycle["accepted_count"] += int(accepted)
+        cycle["range_rejected"] = cycle["range_rejected"] or bool(bad_pm)
+        if len(cycle["trace"]) < MAX_TRACE:
+            cycle["trace"].append({"read": held["read"], "pm": held["decoded"][:4] if values else None,
+                                   "accepted": bool(accepted), "reason": reason})
+        else:
+            cycle["trace_truncated"] = True
+        # Keep the first good example and preferentially retain rejected/CRC/ready examples.
+        held["priority"] = 2 if reason != "accepted" else (1 if not held["crc_ok"] or not ready or ready.get("value") is not True else 0)
+        examples = cycle["examples"]
+        if len(examples) < MAX_EXAMPLES:
+            examples.append(held)
+        else:
+            lowest = min(range(len(examples)), key=lambda i: examples[i]["priority"])
+            if held["priority"] > examples[lowest]["priority"]:
+                examples[lowest] = held
+            self.totals["suppressed"] += 1
+
+    def finish(self, result):
+        cycle = self.current
+        cycle["result"] = result
+        cycle["reason"] = "pm_invalid_or_range" if cycle["range_rejected"] else ("accepted" if result else "no_accepted_samples")
+        cycle["priority"] = max([e["priority"] for e in cycle["examples"]] + [0])
+        # One immutable completed cycle in addition to the active cycle.
+        if self.pending is None or cycle["priority"] > self.pending["priority"] or not cycle["priority"] and not self.pending["priority"]:
+            self.pending = cycle
+        self.completed = cycle
+        self.current = None
+
+    def output(self, payload):
+        if self.completed is not None:
+            self.completed["minute_ts"] = payload["ts"]
+            self.completed["minute_pm"] = {k: payload["data"][k] for k in FIELDS[:4] if k in payload["data"]}
+            self.completed = None
+
+    def take_due(self):
+        now = time.ticks_ms()
+        if self.pending is None:
+            return None
+        if self.last_attempt_ms is not None and time.ticks_diff(now, self.last_attempt_ms) < 60000:
+            return None
+        if not self.pending["priority"] and self.last_normal_ms is not None and time.ticks_diff(now, self.last_normal_ms) < 600000:
+            # Keep the latest normal cycle rather than an old uninteresting one.
+            self.pending = None
+            return None
+        report = {"schema": 1, "session_ms": self.session_ms, "format": "float32_be_0x03",
+                  "fields": FIELDS, "units": UNITS, "totals": dict(self.totals),
+                  "cycle": self.pending, "init": "START 0010 0300; no STOP/RESET/CLEAN"}
+        self.pending = None
+        self.last_attempt_ms = now
+        if not report["cycle"]["priority"]:
+            self.last_normal_ms = now
+        self.totals["publish_attempts"] += 1
+        return report
+
+    def sent(self, ok):
+        self.totals["publish_ok" if ok else "publish_failed"] += 1
